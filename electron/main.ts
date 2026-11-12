@@ -5,7 +5,8 @@ import { appendFileSync, existsSync, mkdirSync, createWriteStream } from "node:f
 import { createServer } from "node:net";
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
-import { appliquerMigrations } from "./migrate";
+import { appliquerMigrations, migrationsInconnues } from "./migrate";
+import { chercherMiseAJour, telechargerInstallateur, resumerNotes, type MiseAJour } from "./mise-a-jour";
 import { lireConfig, ecrireConfig } from "./config";
 import {
   type Verrou,
@@ -61,6 +62,10 @@ let derniereEcritureVerrou = 0;
 let conflitDetecte = false;
 let minuterieVerrou: NodeJS.Timeout | null = null;
 const INTERVALLE_VERROU_MS = 2 * 60 * 1000;
+
+/** Installateur téléchargé, lancé une fois l'appli fermée proprement (voir `before-quit`). */
+let installateurEnAttente: string | null = null;
+let verificationMajEnCours = false;
 
 function estCePoste(verrou: Verrou): boolean {
   return verrou.poste === session.poste && verrou.utilisateur === session.utilisateur;
@@ -410,6 +415,139 @@ async function ouvrirAutreBase(): Promise<void> {
   app.quit();
 }
 
+function messageErreur(erreur: unknown): string {
+  return erreur instanceof Error ? erreur.message : String(erreur);
+}
+
+async function afficherMessage(options: Electron.MessageBoxOptions): Promise<number> {
+  const parent = fenetrePrincipale && !fenetrePrincipale.isDestroyed() ? fenetrePrincipale : null;
+  const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+  return response;
+}
+
+function barreProgression(fraction: number): void {
+  if (fenetrePrincipale && !fenetrePrincipale.isDestroyed()) fenetrePrincipale.setProgressBar(fraction);
+}
+
+/**
+ * Cherche une version plus récente dans les releases GitHub et propose de
+ * l'installer. Au démarrage, ne dit rien s'il n'y en a pas ou si GitHub est
+ * injoignable ; depuis le menu (ou quand la base vient d'une version plus
+ * récente), l'indique. Si l'utilisateur accepte, télécharge l'installateur
+ * puis ferme l'appli proprement — l'installateur est lancé à la toute fin de
+ * la fermeture, une fois le verrou de la base libéré. Retourne `true` si
+ * l'appli se ferme pour installer.
+ */
+async function verifierMisesAJour(contexte: "demarrage" | "menu" | "base-plus-recente"): Promise<boolean> {
+  if (verificationMajEnCours || installateurEnAttente) return false;
+  verificationMajEnCours = true;
+  const titre = "Mise à jour de Ma comptabilité";
+  try {
+    let maj: MiseAJour | null;
+    try {
+      maj = await chercherMiseAJour(app.getVersion());
+    } catch (erreur) {
+      if (contexte !== "demarrage") {
+        await afficherMessage({
+          type: "error",
+          title: titre,
+          message: "Impossible de vérifier les mises à jour.",
+          detail: `Vérifiez la connexion internet, puis réessayez.\n\n${messageErreur(erreur)}`,
+          buttons: ["OK"],
+          noLink: true,
+        });
+      }
+      return false;
+    }
+
+    if (!maj) {
+      if (contexte === "menu") {
+        await afficherMessage({
+          type: "info",
+          title: titre,
+          message: "Ma comptabilité est à jour.",
+          detail: `Version installée : ${app.getVersion()}.`,
+          buttons: ["OK"],
+          noLink: true,
+        });
+      } else if (contexte === "base-plus-recente") {
+        await afficherMessage({
+          type: "warning",
+          title: titre,
+          message: "Aucune mise à jour n'a été trouvée en ligne.",
+          detail: "Installez à la main la même version que sur l'autre poste, puis rouvrez l'appli.",
+          buttons: ["Quitter"],
+          noLink: true,
+        });
+      }
+      return false;
+    }
+
+    const notes = resumerNotes(maj.notes);
+    const reponse = await afficherMessage({
+      type: "info",
+      title: titre,
+      message: `La version ${maj.version} de Ma comptabilité est disponible.`,
+      detail:
+        `Version installée : ${app.getVersion()}.\n\n` +
+        (notes ? `${notes}\n\n` : "") +
+        "L'installation ferme l'appli, la met à jour sans toucher aux données, puis la rouvre.",
+      buttons: ["Installer maintenant", "Plus tard"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (reponse !== 0) return false;
+
+    let chemin: string;
+    try {
+      chemin = await telechargerInstallateur(
+        maj.installateur,
+        join(app.getPath("temp"), "ma-comptabilite-mise-a-jour"),
+        barreProgression
+      );
+    } catch (erreur) {
+      await afficherMessage({
+        type: "error",
+        title: titre,
+        message: "Le téléchargement de la mise à jour a échoué.",
+        detail: `Rien n'a été modifié. Vous pourrez réessayer depuis le menu Aide.\n\n${messageErreur(erreur)}`,
+        buttons: ["OK"],
+        noLink: true,
+      });
+      return false;
+    } finally {
+      barreProgression(-1);
+    }
+
+    installateurEnAttente = chemin;
+    app.quit();
+    return true;
+  } finally {
+    verificationMajEnCours = false;
+  }
+}
+
+/**
+ * Lance l'installateur NSIS détaché de l'appli. `--updated` : il attend la
+ * fin de l'appli au lieu de demander de la fermer ; `--force-run` : il la
+ * relance une fois installée.
+ */
+function lancerInstallateur(chemin: string): void {
+  try {
+    const installateur = spawn(chemin, ["--updated", "--force-run"], { detached: true, stdio: "ignore" });
+    installateur.on("error", (erreur) => {
+      appendFileSync(join(app.getPath("userData"), "crash.log"), `[mise à jour] ${messageErreur(erreur)}\n`);
+    });
+    installateur.unref();
+  } catch (erreur) {
+    dialog.showErrorBox(
+      "Mise à jour de Ma comptabilité",
+      `L'installateur n'a pas pu être lancé : ${messageErreur(erreur)}\n\nIl se trouve ici : ${chemin}`
+    );
+  }
+}
+
 function construireMenu(dossierDonnees: string): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     {
@@ -444,6 +582,14 @@ function construireMenu(dossierDonnees: string): void {
         { role: "togglefullscreen", label: "Plein écran" },
       ],
     },
+    {
+      label: "Aide",
+      submenu: [
+        { label: "Rechercher des mises à jour…", click: () => void verifierMisesAJour("menu") },
+        { type: "separator" },
+        { label: `Version ${app.getVersion()}`, enabled: false },
+      ],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -458,6 +604,25 @@ async function demarrer(): Promise<void> {
   const dbFilePath = join(dossierDonnees, "compta.db");
 
   if (!(await verifierAccesBase(dossierDonnees, dbFilePath))) {
+    app.exit(0);
+    return;
+  }
+
+  if (migrationsInconnues(dbFilePath, dossierMigrations()).length > 0) {
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      title: "Ma comptabilité",
+      message: "Cette base a été enregistrée par une version plus récente de Ma comptabilité.",
+      detail:
+        `Version installée sur ce poste : ${app.getVersion()}.\n\n` +
+        "Mettez l'appli à jour avant d'ouvrir la base : cette version ne connaît pas encore les dernières " +
+        "évolutions de sa structure, et l'ouvrir risquerait d'abîmer les données.",
+      buttons: ["Mettre à jour", "Quitter"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (response === 0 && (await verifierMisesAJour("base-plus-recente"))) return;
     app.exit(0);
     return;
   }
@@ -492,6 +657,12 @@ async function demarrer(): Promise<void> {
   // Retour sur la fenêtre : vérifier que la base n'a pas été prise
   // ailleurs entre-temps, avant toute nouvelle saisie.
   fenetrePrincipale.on("focus", () => surveillerVerrou());
+  if (app.isPackaged) {
+    // Quelques secondes après l'affichage, pour ne pas ralentir le démarrage.
+    fenetrePrincipale.webContents.once("did-finish-load", () => {
+      setTimeout(() => void verifierMisesAJour("demarrage"), 3000);
+    });
+  }
   fenetrePrincipale.loadURL(`http://127.0.0.1:${port}`);
 }
 
@@ -522,6 +693,7 @@ app.on("before-quit", (event) => {
   fermetureEnCours = true;
   fermerProprement().finally(() => {
     fermetureTerminee = true;
+    if (installateurEnAttente) lancerInstallateur(installateurEnAttente);
     app.quit();
   });
 });

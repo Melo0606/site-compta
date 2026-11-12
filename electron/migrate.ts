@@ -4,6 +4,41 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 /**
+ * Migrations déjà appliquées à la base mais absentes de `migrationsDir` :
+ * la base a été mise à jour par une version plus récente de l'appli (sur un
+ * autre poste, la base étant partagée), dont cette version ne connaît pas le
+ * schéma. Liste vide si la base n'existe pas encore ou n'est pas lisible
+ * (l'ouverture normale signalera alors le problème).
+ */
+export function migrationsInconnues(dbFilePath: string, migrationsDir: string): string[] {
+  if (!existsSync(dbFilePath)) return [];
+  let appliquees: string[];
+  try {
+    const db = new Database(dbFilePath, { readonly: true, fileMustExist: true });
+    try {
+      const table = db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_prisma_migrations'`)
+        .get();
+      if (!table) return [];
+      appliquees = db
+        .prepare(`SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`)
+        .all()
+        .map((r: unknown) => (r as { migration_name: string }).migration_name);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+  const connues = new Set(
+    readdirSync(migrationsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+  );
+  return appliquees.filter((nom) => !connues.has(nom));
+}
+
+/**
  * Applique les migrations Prisma (fichiers migration.sql sous
  * `migrationsDir`) directement via better-sqlite3, sans dépendre du CLI
  * Prisma à l'exécution. La table `_prisma_migrations` créée/lue est celle du
