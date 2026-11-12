@@ -1,0 +1,279 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum TypeRevenu {
+  MENSUEL
+  PONCTUEL
+  ANNUEL
+}
+
+enum TypeCompte {
+  COMMUN
+  PERSO
+}
+
+enum CleRepartition {
+  EGALE
+  PRORATA_REVENUS
+}
+
+enum TypeElementPaiement {
+  CHARGE_MENSUELLE
+  CHARGE_ANNUELLE
+  ACHAT_PREVU
+  REVENU
+}
+
+model Personne {
+  id                        Int                  @id @default(autoincrement())
+  nom                       String
+  soldePerso                Float                @default(0)
+  soldeEpargne              Float                @default(0)
+  virementMensuelHabituel   Float                @default(0)
+  virementEpargneMensuelHabituel Float           @default(0)
+  revenus                   Revenu[]
+  chargesMensuelles         ChargeMensuelle[]
+  chargesAnnuelles          ChargeAnnuelle[]
+  achatsPrevus              AchatPrevu[]
+  virements                 VirementMois[]
+  virementsEpargne          VirementEpargneMois[]
+  depensesQuotidiennes      DepenseQuotidienne[]
+  soldesMois                SoldePersonneMois[]
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+}
+
+model Revenu {
+  id             Int                    @id @default(autoincrement())
+  libelle        String
+  montant        Float
+  type           TypeRevenu             @default(MENSUEL)
+  date           DateTime? // pour un revenu ponctuel
+  moisRecurrence Int? // 1-12, pour un revenu annuel (ex: prime d'intéressement en octobre)
+  /** Jour du mois (1-31) où ce revenu MENSUEL ou ANNUEL est réellement versé, si connu et fixe (ex : salaire versé le 28). `null` = inconnu/pas de crédit automatique (comportement inchangé). Sans objet pour un revenu PONCTUEL, qui a déjà une date exacte. Une fois ce jour atteint dans le mois en cours, le montant est crédité automatiquement sur le solde perso (voir `rattraperRevenusMoisCourant`) — un mois plus court que ce jour (ex. 31 en février) est traité comme versé dès le dernier jour du mois. */
+  jourVersement  Int?
+  personne       Personne               @relation(fields: [personneId], references: [id], onDelete: Cascade)
+  personneId     Int
+  montantsAnnee  RevenuAnnuelMontant[]
+  montantsMois   RevenuMensuelMontant[]
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+}
+
+/** Montant réel d'un revenu annuel pour une année donnée (remplace le montant de référence). */
+model RevenuAnnuelMontant {
+  id       Int    @id @default(autoincrement())
+  revenu   Revenu @relation(fields: [revenuId], references: [id], onDelete: Cascade)
+  revenuId Int
+  annee    Int
+  montant  Float
+
+  @@unique([revenuId, annee])
+}
+
+/** Montant réel d'un revenu mensuel pour un mois donné (remplace le montant de référence, ex : salaire variable d'un mois à l'autre). */
+model RevenuMensuelMontant {
+  id       Int    @id @default(autoincrement())
+  revenu   Revenu @relation(fields: [revenuId], references: [id], onDelete: Cascade)
+  revenuId Int
+  annee    Int
+  mois     Int // 1-12
+  montant  Float
+
+  @@unique([revenuId, annee, mois])
+}
+
+model ChargeMensuelle {
+  id              Int        @id @default(autoincrement())
+  libelle         String
+  categorieId     Int?
+  categorie       Categorie? @relation(fields: [categorieId], references: [id], onDelete: SetNull)
+  montant         Float
+  compte          TypeCompte @default(COMMUN)
+  dateDebut       DateTime? // si renseignée, la charge ne compte qu'à partir du mois de cette date
+  dateFin         DateTime? // si renseignée, la charge ne compte plus à partir du mois suivant cette date (dernier mois actif inclus)
+  montantVariable Boolean    @default(false) // si vrai, le montant réel peut différer du montant de référence (ex. carburant) : un montant est saisi chaque mois plutôt qu'une simple case à cocher
+  /** Jour du mois (1-31) où le prélèvement/paiement a réellement lieu, si connu et fixe (ex : prélèvement automatique le 5). `null` = inconnu/variable, comportement inchangé (payée par défaut dès le 1er du mois). Sert uniquement à affiner le solde projeté du mois en cours : avant ce jour, la charge est considérée pas encore débitée par défaut ; à partir de ce jour, comme avant. Un mois plus court que ce jour (ex. jourDebit=31, février) est traité comme débité dès le dernier jour du mois. */
+  jourDebit       Int?
+  /** Mois de l'année (1-12, bornes incluses) où la charge tombe, si elle ne tombe pas tous les mois (ex : taxe foncière mensualisée de janvier à octobre = 1 et 10). `null` sur les deux = tous les mois. Une plage « à cheval » (ex : 11 → 2) couvre novembre à février. S'ajoute à dateDebut/dateFin, qui bornent toujours la période globale. */
+  moisDebutAnnee  Int?
+  moisFinAnnee    Int?
+  personne        Personne?  @relation(fields: [personneId], references: [id], onDelete: Cascade)
+  personneId      Int?
+  /** Ligne gérée automatiquement : son "payé" affiché vient de la somme des dépenses du quotidien du même périmètre pour le mois, pas d'un pointage manuel. Créée par ajouterDepenseQuotidienne, jamais cochable dans le formulaire de création. */
+  budgetDepensesQuotidiennes Boolean @default(false)
+  montantsHistorique ChargeMensuelleMontant[]
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+}
+
+/** Changement du montant d'une charge mensuelle à partir d'un mois donné (ex : l'assurance passe de 150€ à 120€ à partir de mars) — n'affecte que ce mois et les suivants ; les mois antérieurs gardent le montant en vigueur avant ce changement (le montant de base de la charge, ou un changement daté antérieur). */
+model ChargeMensuelleMontant {
+  id                Int             @id @default(autoincrement())
+  chargeMensuelle   ChargeMensuelle @relation(fields: [chargeMensuelleId], references: [id], onDelete: Cascade)
+  chargeMensuelleId Int
+  montant           Float
+  depuisAnnee       Int
+  depuisMois        Int // 1-12
+  createdAt         DateTime        @default(now())
+
+  @@unique([chargeMensuelleId, depuisAnnee, depuisMois])
+}
+
+model ChargeAnnuelle {
+  id           Int        @id @default(autoincrement())
+  libelle      String
+  montant      Float
+  moisEcheance Int
+  compte       TypeCompte @default(COMMUN)
+  personne     Personne?  @relation(fields: [personneId], references: [id], onDelete: Cascade)
+  personneId   Int?
+  categorieId  Int?
+  categorie    Categorie? @relation(fields: [categorieId], references: [id], onDelete: SetNull)
+  /** Si renseigné (y compris 0), la charge est en mode « rattrapage » pour sa toute prochaine échéance : provision = (montant - dejaProvisionne) réparti sur les mois restants avant cette échéance (voir aussi `dateDebutProvisionnement`), au lieu du lissage /12 habituel. Utile pour une charge tout juste créée dont l'échéance est proche, sans les 11 mois de provisionnement habituels déjà collectés. Ne s'applique plus une fois cette prochaine échéance passée (retour automatique au lissage classique, indépendamment de la valeur stockée ici). `null` = comportement classique (défaut, valable pour toutes les charges existantes). */
+  dejaProvisionne Float?
+  /** Uniquement pris en compte si `dejaProvisionne` est renseigné : si postérieure à aujourd'hui, aucune provision n'est comptée pour cette charge avant le mois de cette date (ex : charge créée en cours de mois, ce mois-ci n'a pas pu être provisionné). */
+  dateDebutProvisionnement DateTime?
+  /** Mois où l'échéance en cours a réellement été marquée payée (« Marquer comme payé »), débitant le solde en direct — `null` tant que le cycle annuel en cours n'a pas été réglé. Redevient automatiquement pertinent (comparé à l'échéance en cours) l'année suivante, sans qu'il soit nécessaire de le remettre à `null` à la main. */
+  dateDernierPaiement DateTime?
+  /** Année de la toute dernière échéance (ex : 2026 pour une taxe foncière payée une dernière fois en octobre 2026 avant de passer en mensualisation). Après le mois de cette échéance, la charge ne compte plus du tout : ni provision, ni échéance, ni réserve. `null` = la charge se répète indéfiniment (défaut). */
+  anneeDerniereEcheance Int?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+model AchatPrevu {
+  id                       Int        @id @default(autoincrement())
+  libelle                  String
+  montantCible             Float
+  dateVisee                DateTime
+  dateDebutProvisionnement DateTime? // si renseignée et postérieure à aujourd'hui, le provisionnement ne commence qu'à partir de ce mois
+  sansProvisionnement      Boolean    @default(false) // si vrai, aucune provision mensuelle collectée : l'achat n'apparaît et ne pèse sur le besoin qu'au mois de l'échéance, montant plein d'un coup
+  dejaProvisionne          Float      @default(0)
+  achete                   Boolean    @default(false) // marqué comme réellement acheté, indépendamment de dejaProvisionne (réversible)
+  /** Mois où l'achat a réellement été marqué acheté (celui affiché/actif au moment du clic sur « Marquer comme acheté », pas forcément la date visée) — l'achat n'apparaît plus qu'à ce mois-là dans le détail mensuel une fois acheté. `null` tant que `achete` est faux. */
+  dateAchat                DateTime?
+  compte                   TypeCompte @default(COMMUN)
+  personne                 Personne?  @relation(fields: [personneId], references: [id], onDelete: Cascade)
+  personneId               Int?
+  categorieId              Int?
+  categorie                Categorie? @relation(fields: [categorieId], references: [id], onDelete: SetNull)
+  createdAt                DateTime   @default(now())
+  updatedAt                DateTime   @updatedAt
+}
+
+/** Catégorie libre gérée par l'utilisateur, partagée entre charges mensuelles/annuelles, achats prévus et dépenses du quotidien (pour les stats). */
+model Categorie {
+  id                  Int                  @id @default(autoincrement())
+  nom                 String               @unique
+  chargesMensuelles   ChargeMensuelle[]
+  chargesAnnuelles    ChargeAnnuelle[]
+  achatsPrevus        AchatPrevu[]
+  depensesQuotidiennes DepenseQuotidienne[]
+  createdAt           DateTime             @default(now())
+}
+
+model Parametres {
+  id             Int            @id @default(autoincrement())
+  cleRepartition CleRepartition @default(EGALE)
+  soldeCommun    Float          @default(0)
+  updatedAt      DateTime       @updatedAt
+}
+
+/** Un mois suivi (ex: 2026-08). Créé à la demande dès qu'on coche un paiement, saisit un virement ou personnalise l'entrée théorique pour ce mois. */
+model Mois {
+  id                        Int                  @id @default(autoincrement())
+  annee                     Int
+  mois                      Int // 1-12
+  entreesTheoriqueOverride  Float? // remplace le virement mensuel habituel/besoin théorique pour ce mois précis (mois futur non suivi)
+  /** Solde réel du compte commun archivé à la clôture de ce mois (voir `archiverMoisEcoule`) — permet de consulter ce mois plus tard, une fois passé, sans reconstitution approximative. `null` si ce mois n'a jamais été clôturé (mois futur, ou passé avant la mise en place de l'archivage). */
+  soldeCommunFinDeMois      Float?
+  paiements                 Paiement[]
+  virements                 VirementMois[]
+  virementsEpargne          VirementEpargneMois[]
+  depensesQuotidiennes      DepenseQuotidienne[]
+  soldesPersonnes           SoldePersonneMois[]
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+
+  @@unique([annee, mois])
+}
+
+/** Solde perso/épargne d'une personne archivé à la clôture d'un mois (voir `Mois.soldeCommunFinDeMois`). */
+model SoldePersonneMois {
+  id           Int      @id @default(autoincrement())
+  mois         Mois     @relation(fields: [moisId], references: [id], onDelete: Cascade)
+  moisId       Int
+  personne     Personne @relation(fields: [personneId], references: [id], onDelete: Cascade)
+  personneId   Int
+  soldePerso   Float
+  soldeEpargne Float
+
+  @@unique([moisId, personneId])
+}
+
+/** Marque un élément (charge mensuelle, charge annuelle ou achat prévu) comme payé pour un mois donné. */
+model Paiement {
+  id      Int                 @id @default(autoincrement())
+  mois    Mois                @relation(fields: [moisId], references: [id], onDelete: Cascade)
+  moisId  Int
+  type    TypeElementPaiement
+  refId   Int // id de ChargeMensuelle, ChargeAnnuelle ou AchatPrevu selon `type`
+  payee   Boolean             @default(true)
+  montant Float? // montant réellement payé (charges mensuelles à montant variable, ex. carburant) ; sinon le montant de référence est utilisé
+
+  @@unique([moisId, type, refId])
+}
+
+/** Montant réellement transféré par une personne vers le compte commun pour un mois donné. */
+model VirementMois {
+  id         Int      @id @default(autoincrement())
+  mois       Mois     @relation(fields: [moisId], references: [id], onDelete: Cascade)
+  moisId     Int
+  personne   Personne @relation(fields: [personneId], references: [id], onDelete: Cascade)
+  personneId Int
+  montant    Float    @default(0)
+  /** L'écart entre ce montant et le virement habituel a-t-il déjà été répercuté sur soldeCommun/soldePerso ? Faux tant que le mois est resté futur au moment de la saisie (voir `estMoisPasseOuCourant`) — rattrapé une fois pour toutes par `rattraperVirementsMoisCourant` dès que le mois devient le mois en cours. */
+  soldeApplique Boolean @default(true)
+
+  @@unique([moisId, personneId])
+}
+
+/** Montant réellement viré par une personne entre son compte perso et son compte épargne pour un mois donné. */
+model VirementEpargneMois {
+  id         Int      @id @default(autoincrement())
+  mois       Mois     @relation(fields: [moisId], references: [id], onDelete: Cascade)
+  moisId     Int
+  personne   Personne @relation(fields: [personneId], references: [id], onDelete: Cascade)
+  personneId Int
+  montant    Float    @default(0)
+  /** Voir `VirementMois.soldeApplique`. */
+  soldeApplique Boolean @default(true)
+
+  @@unique([moisId, personneId])
+}
+
+/** Dépense ponctuelle du quotidien (hors charges/achats planifiés), pour le compte commun (personneId = null) ou une personne, pour un mois donné. */
+model DepenseQuotidienne {
+  id          Int        @id @default(autoincrement())
+  mois        Mois       @relation(fields: [moisId], references: [id], onDelete: Cascade)
+  moisId      Int
+  personne    Personne?  @relation(fields: [personneId], references: [id], onDelete: Cascade)
+  personneId  Int?
+  libelle     String
+  /** Positif pour une dépense, négatif pour un remboursement reçu (recrédite le solde, se déduit du total du mois). */
+  montant     Float
+  date        DateTime?
+  categorieId Int?
+  categorie   Categorie? @relation(fields: [categorieId], references: [id], onDelete: SetNull)
+  createdAt   DateTime   @default(now())
+}

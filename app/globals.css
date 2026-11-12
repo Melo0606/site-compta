@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+
+  --shell: #15151c;
+  --shell-text: #f3f3f7;
+  --shell-muted: #8b8aa3;
+  --shell-active: rgba(255, 255, 255, 0.09);
+  --shell-border: rgba(255, 255, 255, 0.07);
+
+  --bg: #f5f6fa;
+  --surface: #ffffff;
+  --surface-muted: #fbfbfe;
+  --border: #e7e7f0;
+  --text: #17171f;
+  --muted: #75758c;
+  --muted-2: #a3a2b8;
+
+  --accent: #4a5df0;
+  --accent-soft: #e8eafd;
+  --accent-strong: #3a4bd6;
+  --on-accent: #ffffff;
+
+  --warn: #b06f0a;
+  --warn-soft: #faf0da;
+
+  --flag: #af2f80;
+  --flag-soft: #fbe6f4;
+
+  --pos: #0f8a58;
+  --pos-soft: #e2f7ec;
+
+  --neg: #c53a30;
+  --neg-soft: #fbe6e4;
+
+  --shadow-card: 0 1px 2px rgba(23, 23, 31, 0.04);
+  --shadow-pop: 0 16px 40px -20px rgba(23, 23, 31, 0.35);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --shell: #0c0c11;
+    --shell-text: #f3f3f7;
+    --shell-muted: #83829c;
+    --shell-active: rgba(255, 255, 255, 0.08);
+    --shell-border: rgba(255, 255, 255, 0.06);
+
+    --bg: #121218;
+    --surface: #1a1a23;
+    --surface-muted: #1f1f2a;
+    --border: #2b2b38;
+    --text: #eeeef3;
+    --muted: #9694ab;
+    --muted-2: #6d6c82;
+
+    --accent: #7c8bff;
+    --accent-soft: #262a52;
+    --accent-strong: #9aa4ff;
+    --on-accent: #0e1030;
+
+    --warn: #e3a53f;
+    --warn-soft: #332810;
+
+    --flag: #e37bc4;
+    --flag-soft: #3a1f34;
+
+    --pos: #3ddb9a;
+    --pos-soft: #123326;
+
+    --neg: #f0877f;
+    --neg-soft: #3a1c1a;
+
+    --shadow-card: none;
+    --shadow-pop: 0 20px 50px -24px rgba(0, 0, 0, 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --shell: #0c0c11;
+  --shell-text: #f3f3f7;
+  --shell-muted: #83829c;
+  --shell-active: rgba(255, 255, 255, 0.08);
+  --shell-border: rgba(255, 255, 255, 0.06);
+
+  --bg: #121218;
+  --surface: #1a1a23;
+  --surface-muted: #1f1f2a;
+  --border: #2b2b38;
+  --text: #eeeef3;
+  --muted: #9694ab;
+  --muted-2: #6d6c82;
+
+  --accent: #7c8bff;
+  --accent-soft: #262a52;
+  --accent-strong: #9aa4ff;
+  --on-accent: #0e1030;
+
+  --warn: #e3a53f;
+  --warn-soft: #332810;
+
+  --flag: #e37bc4;
+  --flag-soft: #3a1f34;
+
+  --pos: #3ddb9a;
+  --pos-soft: #123326;
+
+  --neg: #f0877f;
+  --neg-soft: #3a1c1a;
+
+  --shadow-card: none;
+  --shadow-pop: 0 20px 50px -24px rgba(0, 0, 0, 0.6);
+}
+
+@theme inline {
+  --color-shell: var(--shell);
+  --color-shell-text: var(--shell-text);
+  --color-shell-muted: var(--shell-muted);
+  --color-shell-active: var(--shell-active);
+  --color-shell-border: var(--shell-border);
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-muted-2: var(--muted-2);
+
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-strong: var(--accent-strong);
+  --color-on-accent: var(--on-accent);
+
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-flag: var(--flag);
+  --color-flag-soft: var(--flag-soft);
+  --color-pos: var(--pos);
+  --color-pos-soft: var(--pos-soft);
+  --color-neg: var(--neg);
+  --color-neg-soft: var(--neg-soft);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans), ui-sans-serif, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+table {
+  font-variant-numeric: tabular-nums;
+}

@@ -1,0 +1,80 @@
+{
+  "name": "site-compta",
+  "version": "0.1.1",
+  "private": true,
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "postinstall": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:desktop": "node scripts/build-desktop.js",
+    "dist:win": "npm run build:desktop && electron-builder --win"
+  },
+  "dependencies": {
+    "@prisma/adapter-better-sqlite3": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "better-sqlite3": "^12.11.1",
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "electron": "42.9.0",
+    "electron-builder": "^26.15.3",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.0",
+    "prisma": "^7.9.1",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "build": {
+    "appId": "com.compta-famille.app",
+    "productName": "Ma comptabilité",
+    "directories": {
+      "output": "dist-app"
+    },
+    "files": [
+      "dist-electron/**/*",
+      "node_modules/**/*",
+      "!node_modules/**/*",
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/bindings/**/*",
+      "node_modules/file-uri-to-path/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "standalone",
+        "filter": [
+          "**/*",
+          "!node_modules"
+        ]
+      },
+      {
+        "from": "prisma/migrations",
+        "to": "migrations"
+      }
+    ],
+    "afterPack": "scripts/after-pack.js",
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
