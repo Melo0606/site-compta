@@ -4,10 +4,14 @@ import { getChargesMensuelles, getHistoriqueMontantsParCharge } from "@/app/acti
 import { getChargesAnnuelles } from "@/app/actions/charges-annuelles";
 import { getAchatsPrevus } from "@/app/actions/achats-prevus";
 import { getCategories } from "@/app/actions/categories";
-import { getDepensesQuotidiennesPourPeriodes } from "@/app/actions/mois";
-import { statsParCategorie, type StatsPeriode } from "@/lib/stats";
+import { getDepensesQuotidiennesPourPeriodes, getSoldesArchives, getSuiviBrutParMoisMap } from "@/app/actions/mois";
+import { getRevenus, getRevenuAnnuelMontantsParAnnee, getRevenuMensuelMontantsParMois } from "@/app/actions/revenus";
+import { getParametres } from "@/app/actions/parametres";
+import { projectionPersonnes } from "@/lib/calculs";
+import { statsParCategorie, evolutionSoldesPersonne, type StatsPeriode } from "@/lib/stats";
 import { moisEnAbs, parseMoisAbs } from "@/lib/dates";
 import { StatsView } from "@/components/StatsView";
+import { EvolutionSoldes } from "@/components/EvolutionSoldes";
 import { SelecteurMois } from "@/components/SelecteurMois";
 import { Tabs } from "@/components/Tabs";
 import { pageHeadingClass, sectionHeadingClass, mutedClass, buttonSecondarySmallClass, linkClass } from "@/lib/ui";
@@ -56,6 +60,12 @@ export default async function StatsPage({
     categories,
     depensesQuotidiennes,
     historiqueParCharge,
+    revenus,
+    parametres,
+    suiviBrutParMois,
+    revenuAnnuelOverrides,
+    revenuMensuelOverrides,
+    soldesArchives,
   ] = await Promise.all([
     getPersonnes(),
     getChargesMensuelles(),
@@ -64,7 +74,33 @@ export default async function StatsPage({
     getCategories(),
     getDepensesQuotidiennesPourPeriodes(periodes),
     getHistoriqueMontantsParCharge(),
+    getRevenus(),
+    getParametres(),
+    getSuiviBrutParMoisMap(),
+    getRevenuAnnuelMontantsParAnnee(),
+    getRevenuMensuelMontantsParMois(),
+    getSoldesArchives(),
   ]);
+
+  // Soldes de fin de mois projetés, du mois en cours jusqu'à la fin de la période (si elle n'est pas entièrement passée).
+  const nbMoisProjetes = jusquaAbs - todayAbs + 1;
+  const projections =
+    nbMoisProjetes > 0
+      ? projectionPersonnes({
+          personnes,
+          revenus,
+          chargesMensuelles,
+          chargesAnnuelles,
+          achatsPrevus,
+          cleRepartition: parametres.cleRepartition,
+          suiviBrutParMois,
+          revenuAnnuelOverrides,
+          revenuMensuelOverrides,
+          historiqueParCharge,
+          from: aujourdhui,
+          nbMois: nbMoisProjetes,
+        })
+      : new Map();
 
   const statsCommun = statsParCategorie({
     periodes,
@@ -91,7 +127,36 @@ export default async function StatsPage({
       return {
         id: `personne-${personne.id}`,
         label: personne.nom,
-        content: <StatsView lignes={statsPersonne} colonnes={colonnes} />,
+        content: (
+          <div className="flex flex-col gap-8">
+            <section className="flex flex-col gap-3">
+              <div>
+                <h3 className={sectionHeadingClass}>Évolution des soldes</h3>
+                <p className={`mt-1 text-sm ${mutedClass}`}>
+                  Solde du compte perso et de l&apos;épargne en fin de mois : archivé pour les mois passés, projeté
+                  pour le mois en cours et les mois à venir (en pointillés).
+                </p>
+              </div>
+              <EvolutionSoldes
+                points={evolutionSoldesPersonne({
+                  periodes,
+                  labels: colonnes,
+                  todayAbs,
+                  archives: new Map(
+                    Array.from(soldesArchives, ([cle, archive]) => [cle, archive.personnes.get(personne.id)]).filter(
+                      (e): e is [string, { soldePerso: number; soldeEpargne: number }] => e[1] !== undefined
+                    )
+                  ),
+                  projection: projections.get(personne.id) ?? [],
+                })}
+              />
+            </section>
+            <section className="flex flex-col gap-3">
+              <h3 className={sectionHeadingClass}>Dépenses par catégorie</h3>
+              <StatsView lignes={statsPersonne} colonnes={colonnes} />
+            </section>
+          </div>
+        ),
       };
     }),
   ];
@@ -101,10 +166,10 @@ export default async function StatsPage({
     <div className="flex flex-col gap-6">
       <div>
         <h1 className={pageHeadingClass}>Statistiques</h1>
-        <p className={`mt-1 text-sm ${mutedClass}`}>Dépenses réparties par catégorie sur la période choisie.</p>
+        <p className={`mt-1 text-sm ${mutedClass}`}>Dépenses réparties par catégorie et évolution des soldes de chaque personne sur la période choisie.</p>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className={sectionHeadingClass}>Statistiques par catégorie ({periodes.length} mois)</h2>
+        <h2 className={sectionHeadingClass}>Période ({periodes.length} mois)</h2>
         <form action="/stats" method="get" className="flex flex-wrap items-center gap-2 text-sm">
           <input type="hidden" name="tab" value={defaultTabId} />
           <label className="flex items-center gap-1.5">

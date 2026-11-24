@@ -123,3 +123,45 @@ function foldAutres(lignes: StatsCategoriePeriode[], nbPeriodes: number): StatsC
 
   return [...tete, { categorieId: null, categorieNom: "Autres", parPeriode, total }];
 }
+
+export type PointSoldes = {
+  /** Libellé court de la période (même texte que les colonnes du tableau par catégorie). */
+  label: string;
+  /** Solde de fin de mois, `null` si inconnu (mois passé jamais archivé). */
+  soldePerso: number | null;
+  soldeEpargne: number | null;
+  /** Vrai pour le mois en cours et les mois futurs : solde de fin de mois projeté, pas encore constaté. */
+  projete: boolean;
+};
+
+/**
+ * Évolution des soldes perso et épargne d'une personne, un point par période
+ * (fin de mois) :
+ * - mois passés : solde archivé à la clôture du mois (`SoldePersonneMois`,
+ *   voir `archiverMoisEcoule`), sinon `null` (trou dans la courbe) ;
+ * - mois en cours et mois futurs : solde de fin de mois projeté
+ *   (`projectionPersonnes`, calculée depuis aujourd'hui).
+ */
+export function evolutionSoldesPersonne(data: {
+  periodes: StatsPeriode[];
+  labels: string[];
+  /** Mois absolu (annee * 12 + mois 0-11) d'aujourd'hui. */
+  todayAbs: number;
+  /** Soldes archivés de cette personne, par clé "YYYY-MM" (mois 1-12). */
+  archives: Map<string, { soldePerso: number; soldeEpargne: number }>;
+  /** Projection de cette personne depuis le mois en cours (`MoisProjectionPersonne.cle` → soldes). */
+  projection: { cle: string; soldePerso: number; soldeEpargne: number }[];
+}): PointSoldes[] {
+  const projectionParCle = new Map(data.projection.map((p) => [p.cle, p]));
+  return data.periodes.map((p, i) => {
+    const cle = `${p.annee}-${String(p.mois).padStart(2, "0")}`;
+    const abs = p.annee * 12 + (p.mois - 1);
+    const source = abs < data.todayAbs ? data.archives.get(cle) : projectionParCle.get(cle);
+    return {
+      label: data.labels[i],
+      soldePerso: source?.soldePerso ?? null,
+      soldeEpargne: source?.soldeEpargne ?? null,
+      projete: abs >= data.todayAbs,
+    };
+  });
+}

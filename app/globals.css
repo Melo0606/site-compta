@@ -34,6 +34,10 @@
   --neg: #c53a30;
   --neg-soft: #fbe6e4;
 
+  /* Séries des graphiques (palette dataviz, ordre fixe : 1 = bleu, 2 = orange). */
+  --viz-1: #2a78d6;
+  --viz-2: #eb6834;
+
   --shadow-card: 0 1px 2px rgba(23, 23, 31, 0.04);
   --shadow-pop: 0 16px 40px -20px rgba(23, 23, 31, 0.35);
 }
@@ -73,6 +77,9 @@
     --neg: #f0877f;
     --neg-soft: #3a1c1a;
 
+    --viz-1: #3987e5;
+    --viz-2: #d95926;
+
     --shadow-card: none;
     --shadow-pop: 0 20px 50px -24px rgba(0, 0, 0, 0.6);
   }
@@ -111,6 +118,9 @@
 
   --neg: #f0877f;
   --neg-soft: #3a1c1a;
+
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
 
   --shadow-card: none;
   --shadow-pop: 0 20px 50px -24px rgba(0, 0, 0, 0.6);
