@@ -8,7 +8,7 @@ import { getParametres } from "@/app/actions/parametres";
 
 export async function getAchatsPrevus() {
   return prisma.achatPrevu.findMany({
-    include: { categorie: true, personne: true },
+    include: { categorie: { include: { parent: true } }, personne: true },
     orderBy: { dateVisee: "asc" },
   });
 }

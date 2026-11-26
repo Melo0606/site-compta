@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { getCategories } from "@/app/actions/categories";
+import { categorieRacineParId } from "@/lib/categories";
 import { getPersonnes } from "@/app/actions/personnes";
 import { getRevenus, getRevenuAnnuelMontantsParAnnee, getRevenuMensuelMontantsParMois } from "@/app/actions/revenus";
 import { getChargesMensuelles, getHistoriqueMontantsParCharge } from "@/app/actions/charges-mensuelles";
@@ -178,10 +180,9 @@ export default async function DashboardPage({
   // Répartition par catégorie (mois en cours), partagée entre le panneau
   // commun et chaque panneau personne — toutes charges/achats confondus,
   // peu importe leur compte (voir `calculerRepartitionCategories`).
-  const categorieNomParId = new Map<number, string>();
-  for (const c of [...chargesMensuelles, ...chargesAnnuelles, ...achatsPrevus]) {
-    if (c.categorieId && c.categorie) categorieNomParId.set(c.categorieId, c.categorie.nom);
-  }
+  // Une sous-catégorie compte dans sa catégorie principale.
+  const categoriesListe = await getCategories();
+  const categorieNomParId = new Map(Array.from(categorieRacineParId(categoriesListe), ([id, racine]) => [id, racine.nom]));
 
   const lignesPersonnes = personnes.map((personne) => {
     const virement = virements.get(personne.id) ?? 0;

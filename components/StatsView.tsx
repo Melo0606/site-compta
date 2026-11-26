@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { formatEuros } from "@/lib/format";
-import type { StatsCategoriePeriode } from "@/lib/stats";
+import { replierAutres, type StatsCategoriePeriode, type DetailLibelle } from "@/lib/stats";
 import {
   segmentedWrapClass,
   segmentedItemClass,
@@ -39,33 +39,120 @@ function arcPath(cx: number, cy: number, r: number, departDeg: number, finDeg: n
   return `M ${cx},${cy} L ${depart.x},${depart.y} A ${r},${r} 0 ${grandArc} 0 ${fin.x},${fin.y} Z`;
 }
 
-/** Répartition par catégorie sous forme de barres + pourcentage, triée par montant décroissant (même style que « Où va le besoin mensuel » sur le tableau de bord). */
+const NB_LIBELLES_VISIBLES = 8;
+
+/** Détail d'une catégorie : par sous-catégorie (sous-total), puis par libellé (total et nombre de dépenses). */
+function DetailCategorie({ detail, categorieNom }: { detail: DetailLibelle[]; categorieNom: string }) {
+  const [toutVoir, setToutVoir] = useState(false);
+  const groupes = new Map<string | null, DetailLibelle[]>();
+  for (const d of detail) {
+    if (!groupes.has(d.sousCategorie)) groupes.set(d.sousCategorie, []);
+    groupes.get(d.sousCategorie)!.push(d);
+  }
+  const avecSousCategories = groupes.size > 1 || !groupes.has(null);
+  const ordonnes = Array.from(groupes, ([nom, lignes]) => ({
+    nom,
+    lignes,
+    total: lignes.reduce((s, l) => s + l.total, 0),
+  })).sort((a, b) => b.total - a.total);
+  const tropLong = ordonnes.some((g) => g.lignes.length > NB_LIBELLES_VISIBLES);
+
+  return (
+    <div className="mt-3 flex flex-col gap-3 rounded-lg border border-border bg-surface-muted px-3 py-2.5 text-sm">
+      {ordonnes.map((g) => (
+        <div key={g.nom ?? "__direct"}>
+          {avecSousCategories && (
+            <div className="flex justify-between gap-2 font-medium text-text">
+              <span>{g.nom ?? `${categorieNom} (sans sous-catégorie)`}</span>
+              <span>{formatEuros(g.total)}</span>
+            </div>
+          )}
+          <ul className={avecSousCategories ? "mt-1 flex flex-col gap-0.5 pl-4" : "flex flex-col gap-0.5"}>
+            {(toutVoir ? g.lignes : g.lignes.slice(0, NB_LIBELLES_VISIBLES)).map((l) => (
+              <li key={l.libelle} className="flex justify-between gap-2">
+                <span className="text-muted">
+                  {l.libelle}
+                  {l.nb > 1 && <span className="ml-1.5 text-muted-2">×{l.nb}</span>}
+                </span>
+                <span className="text-text">{formatEuros(l.total)}</span>
+              </li>
+            ))}
+            {!toutVoir && g.lignes.length > NB_LIBELLES_VISIBLES && (
+              <li className="text-muted-2">… et {g.lignes.length - NB_LIBELLES_VISIBLES} autre(s)</li>
+            )}
+          </ul>
+        </div>
+      ))}
+      {tropLong && (
+        <button
+          type="button"
+          onClick={() => setToutVoir((v) => !v)}
+          className="self-start text-xs font-medium text-accent hover:underline"
+        >
+          {toutVoir ? "Réduire" : "Tout voir"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Répartition par catégorie sous forme de barres + pourcentage, triée par montant décroissant (même style que « Où va le besoin mensuel » sur le tableau de bord). Un clic sur une catégorie déplie son détail. */
 function Barres({ lignes }: { lignes: StatsCategoriePeriode[] }) {
+  const [ouvertes, setOuvertes] = useState<Set<string>>(new Set());
   const total = lignes.reduce((sum, l) => sum + l.total, 0);
   if (total === 0) {
     return <p className="py-6 text-center text-sm text-muted-2">Aucune dépense catégorisée sur cette période.</p>;
   }
   const triees = [...lignes].sort((a, b) => b.total - a.total);
+  const basculer = (cle: string) =>
+    setOuvertes((avant) => {
+      const apres = new Set(avant);
+      if (apres.has(cle)) apres.delete(cle);
+      else apres.add(cle);
+      return apres;
+    });
 
   return (
-    <div className="flex flex-col gap-4 py-4">
+    <div className="flex flex-col gap-2 py-4">
       {triees.map((ligne, i) => {
         const pct = Math.round((ligne.total / total) * 100);
         const couleur = COULEURS[i % COULEURS.length];
+        const cle = String(ligne.categorieId ?? `sans-${ligne.categorieNom}`);
+        const ouverte = ouvertes.has(cle);
         return (
-          <div key={ligne.categorieId ?? "sans-categorie"}>
-            <div className="flex items-center justify-between gap-2 text-sm">
-              <span className="font-medium text-text">{ligne.categorieNom}</span>
-              <span className="text-muted">
-                {formatEuros(ligne.total)} <span className="text-muted-2">· {pct}%</span>
-              </span>
-            </div>
-            <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-muted">
-              <span
-                className="block h-full rounded-full"
-                style={{ width: `${pct}%`, backgroundColor: couleur }}
-              />
-            </div>
+          <div key={cle} className="rounded-lg">
+            <button
+              type="button"
+              onClick={() => basculer(cle)}
+              aria-expanded={ouverte}
+              className="block w-full rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-surface-muted"
+            >
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <span className="flex items-center gap-1.5 font-medium text-text">
+                  <span
+                    className="inline-block text-xs text-muted-2"
+                    style={{ transform: ouverte ? "rotate(90deg)" : undefined }}
+                  >
+                    ▶
+                  </span>
+                  {ligne.categorieNom}
+                </span>
+                <span className="text-muted">
+                  {formatEuros(ligne.total)} <span className="text-muted-2">· {pct}%</span>
+                </span>
+              </div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-muted">
+                <span
+                  className="block h-full rounded-full"
+                  style={{ width: `${Math.max(0, pct)}%`, backgroundColor: couleur }}
+                />
+              </div>
+            </button>
+            {ouverte && (
+              <div className="px-2 pb-2">
+                <DetailCategorie detail={ligne.detail} categorieNom={ligne.categorieNom} />
+              </div>
+            )}
           </div>
         );
       })}
@@ -102,7 +189,11 @@ function Camembert({ lignes }: { lignes: StatsCategoriePeriode[] }) {
           </circle>
         ) : (
           segments.map((s) => (
-            <path key={s.ligne.categorieId ?? "sans-categorie"} d={arcPath(cx, cy, r, s.departDeg, s.finDeg)} fill={s.couleur}>
+            <path
+              key={s.ligne.categorieId ?? "sans-categorie"}
+              d={arcPath(cx, cy, r, s.departDeg, s.finDeg)}
+              fill={s.couleur}
+            >
               <title>
                 {s.ligne.categorieNom} : {formatEuros(s.ligne.total)} ({(s.part * 100).toFixed(0)} %)
               </title>
@@ -157,9 +248,7 @@ function Tableau({ lignes, colonnes }: { lignes: StatsCategoriePeriode[]; colonn
                   {montant > 0 ? formatEuros(montant) : "—"}
                 </td>
               ))}
-              <td className={`${stickyN} bg-surface ${tdClass} text-right font-medium`}>
-                {formatEuros(ligne.total)}
-              </td>
+              <td className={`${stickyN} bg-surface ${tdClass} text-right font-medium`}>{formatEuros(ligne.total)}</td>
             </tr>
           ))}
           {lignes.length === 0 && (
@@ -194,10 +283,18 @@ export function StatsView({ lignes, colonnes }: { lignes: StatsCategoriePeriode[
   return (
     <div>
       <div className={segmentedWrapClass}>
-        <button type="button" onClick={() => setAffichage("barres")} className={segmentedItemClass(affichage === "barres")}>
+        <button
+          type="button"
+          onClick={() => setAffichage("barres")}
+          className={segmentedItemClass(affichage === "barres")}
+        >
           Par catégorie
         </button>
-        <button type="button" onClick={() => setAffichage("tableau")} className={segmentedItemClass(affichage === "tableau")}>
+        <button
+          type="button"
+          onClick={() => setAffichage("tableau")}
+          className={segmentedItemClass(affichage === "tableau")}
+        >
           Tableau
         </button>
         <button
@@ -210,7 +307,7 @@ export function StatsView({ lignes, colonnes }: { lignes: StatsCategoriePeriode[
       </div>
       {affichage === "barres" && <Barres lignes={lignes} />}
       {affichage === "tableau" && <Tableau lignes={lignes} colonnes={colonnes} />}
-      {affichage === "camembert" && <Camembert lignes={lignes} />}
+      {affichage === "camembert" && <Camembert lignes={replierAutres(lignes)} />}
     </div>
   );
 }

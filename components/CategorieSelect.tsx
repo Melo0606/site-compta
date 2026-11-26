@@ -1,7 +1,8 @@
 import { getCategories } from "@/app/actions/categories";
 import { selectClass, labelClass } from "@/lib/ui";
+import { categoriesEnArbre } from "@/lib/categories";
 
-/** Menu déroulant de catégorie, alimenté par la liste gérée dans /categories. */
+/** Menu déroulant de catégorie, alimenté par la liste gérée dans /categories (chaque catégorie suivie de ses sous-catégories). */
 export async function CategorieSelect({
   id,
   name = "categorieId",
@@ -9,6 +10,7 @@ export async function CategorieSelect({
   required = false,
   formHtmlId,
   hideLabel = false,
+  type = "DEPENSE",
 }: {
   id?: string;
   name?: string;
@@ -17,8 +19,10 @@ export async function CategorieSelect({
   /** Réfère un <form> externe (attribut HTML `form`), pour un champ placé hors du formulaire lui-même. */
   formHtmlId?: string;
   hideLabel?: boolean;
+  /** Ne propose que les catégories de ce type (dépenses par défaut). */
+  type?: "DEPENSE" | "REVENU";
 }) {
-  const categories = await getCategories();
+  const categories = (await getCategories()).filter((c) => c.type === type);
   const selectId = id ?? name;
 
   return (
@@ -43,9 +47,9 @@ export async function CategorieSelect({
         ) : (
           <option value="">Sans catégorie</option>
         )}
-        {categories.map((categorie) => (
+        {categoriesEnArbre(categories).map(({ categorie, parent }) => (
           <option key={categorie.id} value={categorie.id}>
-            {categorie.nom}
+            {parent ? `${parent.nom} › ${categorie.nom}` : categorie.nom}
           </option>
         ))}
       </select>

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { nomCompletCategorie } from "@/lib/categories";
 import {
   getChargesAnnuelles,
   createChargeAnnuelle,
@@ -79,7 +80,7 @@ export default async function ChargesAnnuellesPage() {
                         </span>
                       )}
                     </td>
-                    <td className={tdMutedClass}>{charge.categorie?.nom ?? "—"}</td>
+                    <td className={tdMutedClass}>{nomCompletCategorie(charge.categorie) ?? "—"}</td>
                     <td className={tdMutedClass}>
                       {MOIS_OPTIONS.find((m) => m.value === charge.moisEcheance)?.label}
                     </td>

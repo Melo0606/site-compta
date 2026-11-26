@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { nomCompletCategorie } from "@/lib/categories";
 import {
   getAchatsPrevus,
   createAchatPrevu,
@@ -108,7 +109,7 @@ export default async function AchatsPrevusPage({
                         </span>
                       )}
                     </td>
-                    <td className={tdMutedClass}>{achat.categorie?.nom ?? "—"}</td>
+                    <td className={tdMutedClass}>{nomCompletCategorie(achat.categorie) ?? "—"}</td>
                     <td className={tdMutedClass}>
                       {achat.compte === "COMMUN" ? "Commun" : `Perso — ${achat.personne?.nom ?? "?"}`}
                     </td>

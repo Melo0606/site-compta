@@ -1,4 +1,6 @@
 import { notFound } from "next/navigation";
+import { getCategories } from "@/app/actions/categories";
+import { nomCompletCategorie, categorieRacineParId, nomCompletParId } from "@/lib/categories";
 import Link from "next/link";
 import { getPersonnes } from "@/app/actions/personnes";
 import {
@@ -70,6 +72,7 @@ import {
 import { PaiementCheckbox } from "@/components/PaiementCheckbox";
 import { MontantPayeInput } from "@/components/MontantPayeInput";
 import { DepensesQuotidiennesSection } from "@/components/DepensesQuotidiennesSection";
+import { RevenusExceptionnelsSection } from "@/components/RevenusExceptionnelsSection";
 import { Tabs } from "@/components/Tabs";
 import type { Personne, Revenu, ChargeMensuelle } from "@/app/generated/prisma/client";
 
@@ -128,10 +131,10 @@ export default async function MoisDetailPage({
   // Répartition par catégorie (mois affiché), partagée entre le panneau
   // commun et chaque panneau personne — toutes charges/achats confondus,
   // peu importe leur compte (voir `calculerRepartitionCategories`).
-  const categorieNomParId = new Map<number, string>();
-  for (const c of [...chargesMensuelles, ...chargesAnnuelles, ...achatsPrevus]) {
-    if (c.categorieId && c.categorie) categorieNomParId.set(c.categorieId, c.categorie.nom);
-  }
+  // Une sous-catégorie compte dans sa catégorie principale.
+  const categoriesListe = await getCategories();
+  const categorieNomParId = new Map(Array.from(categorieRacineParId(categoriesListe), ([id, racine]) => [id, racine.nom]));
+  const categorieNomCompletParId = nomCompletParId(categoriesListe);
 
   const suiviParMois = await getSuiviParMoisMap({ chargesMensuelles, personnes, historiqueParCharge });
   const virementMensuelHabituelTotal = personnes.reduce(
@@ -559,7 +562,7 @@ export default async function MoisDetailPage({
                     )}
                   </td>
                   <td className={tdClass}>{charge.libelle}</td>
-                  <td className={tdMutedClass}>{charge.categorie?.nom ?? "—"}</td>
+                  <td className={tdMutedClass}>{nomCompletCategorie(charge.categorie) ?? "—"}</td>
                   <td className={tdClass}>{formatEuros(charge.montant)}</td>
                 </tr>
               ))}
@@ -634,7 +637,7 @@ export default async function MoisDetailPage({
                         {dejaPayee && <span className={`ml-2 ${pillClass("pos")}`}>Payée</span>}
                       </td>
                       <td className={tdMutedClass}>
-                        {(d.charge.categorieId && categorieNomParId.get(d.charge.categorieId)) ?? "—"}
+                        {(d.charge.categorieId && categorieNomCompletParId.get(d.charge.categorieId)) ?? "—"}
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center justify-between gap-3">
@@ -726,7 +729,7 @@ export default async function MoisDetailPage({
                       {d.achat.achete && <span className={`ml-2 ${pillClass("pos")}`}>Acheté</span>}
                     </td>
                     <td className={tdMutedClass}>
-                      {(d.achat.categorieId && categorieNomParId.get(d.achat.categorieId)) ?? "—"}
+                      {(d.achat.categorieId && categorieNomCompletParId.get(d.achat.categorieId)) ?? "—"}
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center justify-between gap-3">
@@ -776,6 +779,14 @@ export default async function MoisDetailPage({
           </div>
         </section>
       )}
+
+      <RevenusExceptionnelsSection
+        titre="Revenus exceptionnels"
+        annee={annee}
+        moisStocke={moisStocke}
+        personneId={null}
+        revenus={moisDetail.revenusExceptionnels.filter((r) => r.personneId === null)}
+      />
 
       <DepensesQuotidiennesSection
         titre="Dépenses du quotidien"
@@ -1128,6 +1139,16 @@ export default async function MoisDetailPage({
       </div>
 
         <section>
+          <RevenusExceptionnelsSection
+            titre="Revenus exceptionnels"
+            annee={annee}
+            moisStocke={moisStocke}
+            personneId={personne.id}
+            revenus={moisDetail.revenusExceptionnels.filter((r) => r.personneId === personne.id)}
+          />
+        </section>
+
+        <section>
           <h3 className={sectionHeadingClass}>Virements internes</h3>
           <p className={`mt-1 text-sm ${mutedClass}`}>
             Ce que {personne.nom} vire vers le compte commun et vers son épargne ce mois-ci. Même
@@ -1240,7 +1261,7 @@ export default async function MoisDetailPage({
                       )}
                     </td>
                     <td className={tdClass}>{charge.libelle}</td>
-                    <td className={tdMutedClass}>{charge.categorie?.nom ?? "—"}</td>
+                    <td className={tdMutedClass}>{nomCompletCategorie(charge.categorie) ?? "—"}</td>
                     <td className={tdClass}>{formatEuros(charge.montant)}</td>
                   </tr>
                 ))}
@@ -1325,7 +1346,7 @@ export default async function MoisDetailPage({
                           {dejaPayee && <span className={`ml-2 ${pillClass("pos")}`}>Payée</span>}
                         </td>
                         <td className={tdMutedClass}>
-                          {(d.charge.categorieId && categorieNomParId.get(d.charge.categorieId)) ?? "—"}
+                          {(d.charge.categorieId && categorieNomCompletParId.get(d.charge.categorieId)) ?? "—"}
                         </td>
                         <td className="px-4 py-2.5">
                           <div className="flex items-center justify-between gap-3">
@@ -1417,7 +1438,7 @@ export default async function MoisDetailPage({
                         {d.achat.achete && <span className={`ml-2 ${pillClass("pos")}`}>Acheté</span>}
                       </td>
                       <td className={tdMutedClass}>
-                        {(d.achat.categorieId && categorieNomParId.get(d.achat.categorieId)) ?? "—"}
+                        {(d.achat.categorieId && categorieNomCompletParId.get(d.achat.categorieId)) ?? "—"}
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center justify-between gap-3">

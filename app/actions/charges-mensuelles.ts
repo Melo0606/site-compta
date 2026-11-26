@@ -8,7 +8,7 @@ import { changementEnVigueur, type HistoriqueMontantCharge } from "@/lib/calculs
 
 export async function getChargesMensuelles() {
   return prisma.chargeMensuelle.findMany({
-    include: { personne: true, categorie: true },
+    include: { personne: true, categorie: { include: { parent: true } } },
     orderBy: [{ compte: "asc" }, { libelle: "asc" }],
   });
 }
@@ -139,11 +139,9 @@ export async function assurerChargeBudgetDepensesQuotidiennes(personneId: number
   });
   if (existe) return;
 
-  const categorie = await prisma.categorie.upsert({
-    where: { nom: "Quotidien" },
-    create: { nom: "Quotidien" },
-    update: {},
-  });
+  const categorie =
+    (await prisma.categorie.findFirst({ where: { nom: "Quotidien", parentId: null } })) ??
+    (await prisma.categorie.create({ data: { nom: "Quotidien" } }));
 
   await prisma.chargeMensuelle.create({
     data: {

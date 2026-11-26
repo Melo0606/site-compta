@@ -9,7 +9,7 @@ import { getParametres } from "@/app/actions/parametres";
 
 export async function getChargesAnnuelles() {
   return prisma.chargeAnnuelle.findMany({
-    include: { personne: true, categorie: true },
+    include: { personne: true, categorie: { include: { parent: true } } },
     orderBy: [{ moisEcheance: "asc" }, { libelle: "asc" }],
   });
 }

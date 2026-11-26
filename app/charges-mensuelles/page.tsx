@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { nomCompletCategorie } from "@/lib/categories";
 import {
   getChargesMensuelles,
   createChargeMensuelle,
@@ -112,7 +113,7 @@ export default async function ChargesMensuellesPage() {
                       </span>
                     )}
                   </td>
-                  <td className={tdMutedClass}>{charge.categorie?.nom ?? "—"}</td>
+                  <td className={tdMutedClass}>{nomCompletCategorie(charge.categorie) ?? "—"}</td>
                   <td className={tdMutedClass}>
                     {charge.compte === "COMMUN" ? "Commun" : `Perso — ${charge.personne?.nom ?? "?"}`}
                   </td>

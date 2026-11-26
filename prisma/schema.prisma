@@ -16,6 +16,12 @@ enum TypeRevenu {
   ANNUEL
 }
 
+/** Une catégorie classe soit des dépenses (charges, achats, dépenses du quotidien), soit des revenus exceptionnels. */
+enum TypeCategorie {
+  DEPENSE
+  REVENU
+}
+
 enum TypeCompte {
   COMMUN
   PERSO
@@ -47,6 +53,7 @@ model Personne {
   virements                 VirementMois[]
   virementsEpargne          VirementEpargneMois[]
   depensesQuotidiennes      DepenseQuotidienne[]
+  revenusExceptionnels      RevenuExceptionnel[]
   soldesMois                SoldePersonneMois[]
   createdAt                 DateTime             @default(now())
   updatedAt                 DateTime             @updatedAt
@@ -174,12 +181,22 @@ model AchatPrevu {
 /** Catégorie libre gérée par l'utilisateur, partagée entre charges mensuelles/annuelles, achats prévus et dépenses du quotidien (pour les stats). */
 model Categorie {
   id                  Int                  @id @default(autoincrement())
-  nom                 String               @unique
+  /** Unique parmi les catégories de même parente (« Autres » peut exister sous plusieurs catégories). */
+  nom                 String
+  /** Catégorie parente si c'est une sous-catégorie (un seul niveau : une sous-catégorie n'a pas d'enfants). Supprimer la parente supprime ses sous-catégories (les éléments classés dedans passent « Sans catégorie »). */
+  parentId            Int?
+  /** Dépense ou revenu ; une sous-catégorie a toujours le type de sa parente. */
+  type                TypeCategorie        @default(DEPENSE)
+  parent              Categorie?           @relation("SousCategories", fields: [parentId], references: [id], onDelete: Cascade)
+  sousCategories      Categorie[]          @relation("SousCategories")
   chargesMensuelles   ChargeMensuelle[]
   chargesAnnuelles    ChargeAnnuelle[]
   achatsPrevus        AchatPrevu[]
   depensesQuotidiennes DepenseQuotidienne[]
+  revenusExceptionnels RevenuExceptionnel[]
   createdAt           DateTime             @default(now())
+
+  @@unique([parentId, nom])
 }
 
 model Parametres {
@@ -201,6 +218,7 @@ model Mois {
   virements                 VirementMois[]
   virementsEpargne          VirementEpargneMois[]
   depensesQuotidiennes      DepenseQuotidienne[]
+  revenusExceptionnels      RevenuExceptionnel[]
   soldesPersonnes           SoldePersonneMois[]
   createdAt                 DateTime             @default(now())
   updatedAt                 DateTime             @updatedAt
@@ -271,6 +289,21 @@ model DepenseQuotidienne {
   personneId  Int?
   libelle     String
   /** Positif pour une dépense, négatif pour un remboursement reçu (recrédite le solde, se déduit du total du mois). */
+  montant     Float
+  date        DateTime?
+  categorieId Int?
+  categorie   Categorie? @relation(fields: [categorieId], references: [id], onDelete: SetNull)
+  createdAt   DateTime   @default(now())
+}
+
+/** Revenu exceptionnel saisi sur un mois (vente, cadeau…), pour le compte commun (personneId = null) ou une personne. Crédite le solde correspondant dès la saisie. */
+model RevenuExceptionnel {
+  id          Int        @id @default(autoincrement())
+  mois        Mois       @relation(fields: [moisId], references: [id], onDelete: Cascade)
+  moisId      Int
+  personne    Personne?  @relation(fields: [personneId], references: [id], onDelete: Cascade)
+  personneId  Int?
+  libelle     String
   montant     Float
   date        DateTime?
   categorieId Int?

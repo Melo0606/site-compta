@@ -3,7 +3,15 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { formatEuros } from "@/lib/format";
 import type { FluxPersonne, PosteFlux } from "@/lib/stats";
-import { segmentedWrapClass, segmentedItemClass, tableWrapClass, theadRowClass, thClass, tdClass, tdMutedClass } from "@/lib/ui";
+import {
+  segmentedWrapClass,
+  segmentedItemClass,
+  tableWrapClass,
+  theadRowClass,
+  thClass,
+  tdClass,
+  tdMutedClass,
+} from "@/lib/ui";
 
 // La couleur suit le poste, jamais son rang (palette dataviz, ordre fixe). Revenus, budget et reste en gris neutre.
 const COULEUR = {
@@ -25,6 +33,7 @@ type Noeud = {
   id: string;
   nom: string;
   montant: number;
+  sousCategories?: { nom: string; montant: number }[];
   couleur: string;
   colonne: number;
   y: number;
@@ -32,7 +41,16 @@ type Noeud = {
   /** Étiquette à droite du nœud (première colonne) ou à gauche (les autres). */
   etiquetteADroite: boolean;
 };
-type Lien = { id: string; source: Noeud; cible: Noeud; montant: number; couleur: string; y0: number; y1: number; epaisseur: number };
+type Lien = {
+  id: string;
+  source: Noeud;
+  cible: Noeud;
+  montant: number;
+  couleur: string;
+  y0: number;
+  y1: number;
+  epaisseur: number;
+};
 
 /** Mise en page du diagramme : 3 ou 4 colonnes (revenus → budget → grands postes → détail par catégorie). */
 function miseEnPage(flux: FluxPersonne, largeur: number) {
@@ -50,7 +68,13 @@ function miseEnPage(flux: FluxPersonne, largeur: number) {
     { id: "epargne", nom: "Épargne", montant: flux.epargne, couleur: COULEUR.epargne, enfants: [] },
     { id: "commun", nom: "Compte commun", montant: flux.commun, couleur: COULEUR.commun, enfants: [] },
     { id: "charges", nom: "Charges perso", montant: totalCharges, couleur: COULEUR.charges, enfants: flux.charges },
-    { id: "quotidien", nom: "Dépenses du quotidien", montant: totalQuotidien, couleur: COULEUR.quotidien, enfants: flux.quotidien },
+    {
+      id: "quotidien",
+      nom: "Dépenses du quotidien",
+      montant: totalQuotidien,
+      couleur: COULEUR.quotidien,
+      enfants: flux.quotidien,
+    },
     { id: "reste", nom: "Reste disponible", montant: Math.max(0, reste), couleur: COULEUR.neutre, enfants: [] },
   ].filter((p) => p.montant > 0.005);
 
@@ -65,11 +89,17 @@ function miseEnPage(flux: FluxPersonne, largeur: number) {
 
   // Empile des nœuds verticalement, avec une hauteur de case minimale pour que les étiquettes ne se chevauchent pas.
   const empiler = (
-    liste: { id: string; nom: string; montant: number; couleur: string }[],
+    liste: {
+      id: string;
+      nom: string;
+      montant: number;
+      couleur: string;
+      sousCategories?: { nom: string; montant: number }[];
+    }[],
     colonne: number,
     ecart: number,
     caseMin: number,
-    debut: number | null
+    debut: number | null,
   ): Noeud[] => {
     const cases = liste.map((p) => Math.max(hauteur(p.montant), caseMin));
     const bloc = cases.reduce((s, c) => s + c, 0) + ecart * (liste.length - 1);
@@ -87,14 +117,21 @@ function miseEnPage(flux: FluxPersonne, largeur: number) {
     0,
     ECART,
     HAUTEUR_ETIQUETTE,
-    null
+    null,
   );
   const budget = empiler([{ id: "budget", nom: "Budget", montant: total, couleur: COULEUR.neutre }], 1, 0, 0, null)[0];
   const noeudsPostes = empiler(postes, 2, ECART, HAUTEUR_ETIQUETTE, null);
 
   // Détail par catégorie, centré sur les postes parents.
   const enfants = postes.flatMap((p) =>
-    p.enfants.map((e, i) => ({ id: `${p.id}-${i}`, nom: e.nom, montant: e.montant, couleur: p.couleur, parent: p.id }))
+    p.enfants.map((e, i) => ({
+      id: `${p.id}-${i}`,
+      nom: e.nom,
+      montant: e.montant,
+      couleur: p.couleur,
+      parent: p.id,
+      sousCategories: e.sousCategories,
+    })),
   );
   let noeudsDetail: Noeud[] = [];
   if (aDetail) {
@@ -147,7 +184,14 @@ function pourcentage(montant: number, totalRevenus: number) {
 function Diagramme({ flux }: { flux: FluxPersonne }) {
   const conteneurRef = useRef<HTMLDivElement>(null);
   const [largeur, setLargeur] = useState(900);
-  const [survol, setSurvol] = useState<{ titre: string; montant: number; x: number; y: number; id: string } | null>(null);
+  const [survol, setSurvol] = useState<{
+    titre: string;
+    montant: number;
+    x: number;
+    y: number;
+    id: string;
+    sousCategories?: { nom: string; montant: number }[];
+  } | null>(null);
 
   useEffect(() => {
     const el = conteneurRef.current;
@@ -159,22 +203,37 @@ function Diagramme({ flux }: { flux: FluxPersonne }) {
 
   const { noeuds, liens, xs, hauteurTotale, totalRevenus } = miseEnPage(flux, largeur);
 
-  const survoler = (e: ReactPointerEvent, id: string, titre: string, montant: number) => {
+  const survoler = (
+    e: ReactPointerEvent,
+    id: string,
+    titre: string,
+    montant: number,
+    sousCategories?: { nom: string; montant: number }[],
+  ) => {
     const rect = conteneurRef.current!.getBoundingClientRect();
-    setSurvol({ id, titre, montant, x: e.clientX - rect.left, y: e.clientY - rect.top });
+    setSurvol({ id, titre, montant, sousCategories, x: e.clientX - rect.left, y: e.clientY - rect.top });
   };
-  const actif = (id: string) => survol === null || survol.id === id || survol.id.split(">").includes(id) || id.split(">").includes(survol.id);
+  const actif = (id: string) =>
+    survol === null || survol.id === id || survol.id.split(">").includes(id) || id.split(">").includes(survol.id);
 
   return (
     <div ref={conteneurRef} className="relative py-4" onPointerLeave={() => setSurvol(null)}>
-      <svg width={largeur} height={hauteurTotale} className="block max-w-full overflow-visible" role="img" aria-label="Diagramme des flux d'argent : revenus, budget, puis répartition par poste et par catégorie">
+      <svg
+        width={largeur}
+        height={hauteurTotale}
+        className="block max-w-full overflow-visible"
+        role="img"
+        aria-label="Diagramme des flux d'argent : revenus, budget, puis répartition par poste et par catégorie"
+      >
         {liens.map((l) => (
           <path
             key={l.id}
             d={cheminLien(l, xs)}
             fill={l.couleur}
             fillOpacity={survol?.id === l.id ? 0.6 : actif(l.id) ? 0.32 : 0.12}
-            onPointerMove={(e) => survoler(e, l.id, `${l.source.nom} → ${l.cible.nom}`, l.montant)}
+            onPointerMove={(e) =>
+              survoler(e, l.id, `${l.source.nom} → ${l.cible.nom}`, l.montant, l.cible.sousCategories)
+            }
           />
         ))}
         {noeuds.map((n) => (
@@ -186,7 +245,7 @@ function Diagramme({ flux }: { flux: FluxPersonne }) {
             height={n.h}
             rx={3}
             fill={n.couleur}
-            onPointerMove={(e) => survoler(e, n.id, n.nom, n.montant)}
+            onPointerMove={(e) => survoler(e, n.id, n.nom, n.montant, n.sousCategories)}
           />
         ))}
       </svg>
@@ -220,6 +279,16 @@ function Diagramme({ flux }: { flux: FluxPersonne }) {
             {formatEuros(survol.montant)} <span className="text-muted">/ mois</span>
           </div>
           {totalRevenus > 0 && <div className="text-xs text-muted">{pourcentage(survol.montant, totalRevenus)}</div>}
+          {survol.sousCategories && survol.sousCategories.length > 0 && (
+            <ul className="mt-1.5 border-t border-border pt-1.5 text-xs">
+              {survol.sousCategories.map((sc) => (
+                <li key={sc.nom} className="flex justify-between gap-4">
+                  <span className="text-muted">{sc.nom}</span>
+                  <span className="text-text">{eurosRonds.format(sc.montant)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </div>
@@ -239,7 +308,12 @@ function Tableau({ flux }: { flux: FluxPersonne }) {
     ...flux.charges.map((c) => ({ nom: c.nom, montant: c.montant, niveau: 1 as const })),
     { nom: "Dépenses du quotidien", montant: totalQuotidien, niveau: 0, couleur: COULEUR.quotidien },
     ...flux.quotidien.map((c) => ({ nom: c.nom, montant: c.montant, niveau: 1 as const })),
-    { nom: reste >= 0 ? "Reste disponible" : "Pris sur le solde", montant: Math.abs(reste), niveau: 0, couleur: COULEUR.neutre },
+    {
+      nom: reste >= 0 ? "Reste disponible" : "Pris sur le solde",
+      montant: Math.abs(reste),
+      niveau: 0,
+      couleur: COULEUR.neutre,
+    },
   ];
   return (
     <div className={`${tableWrapClass} my-4`}>
@@ -256,7 +330,9 @@ function Tableau({ flux }: { flux: FluxPersonne }) {
             <tr key={i}>
               <td className={l.niveau === 1 ? `${tdMutedClass} pl-8` : tdClass}>
                 <span className="flex items-center gap-2">
-                  {l.couleur && <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: l.couleur }} />}
+                  {l.couleur && (
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: l.couleur }} />
+                  )}
                   {l.nom}
                 </span>
               </td>
@@ -272,26 +348,54 @@ function Tableau({ flux }: { flux: FluxPersonne }) {
   );
 }
 
+const MOIS_LONGS = [
+  "janvier",
+  "février",
+  "mars",
+  "avril",
+  "mai",
+  "juin",
+  "juillet",
+  "août",
+  "septembre",
+  "octobre",
+  "novembre",
+  "décembre",
+];
+
 function Resume({ flux }: { flux: FluxPersonne }) {
   const revenus = flux.revenus.reduce((s, r) => s + r.montant, 0);
-  const depenses =
-    flux.commun + flux.charges.reduce((s, c) => s + c.montant, 0) + flux.quotidien.reduce((s, c) => s + c.montant, 0);
-  const reste = revenus - depenses - flux.epargne;
+  const depensesPerso =
+    flux.charges.reduce((s, c) => s + c.montant, 0) + flux.quotidien.reduce((s, c) => s + c.montant, 0);
+  const reste = revenus - flux.commun - depensesPerso - flux.epargne;
   const taux = revenus > 0 ? Math.round((flux.epargne / revenus) * 100) : 0;
-  const tauxPossible = revenus > 0 ? Math.round(((flux.epargne + Math.max(0, reste)) / revenus) * 100) : 0;
   const fort = (texte: string) => <span className="font-semibold text-text">{texte}</span>;
 
   return (
-    <p className="text-sm leading-relaxed text-muted">
-      Taux d&apos;épargne : {fort(`${taux} %`)} (possible : {fort(`${tauxPossible} %`)}). En moyenne par mois :{" "}
-      {fort(eurosRonds.format(revenus))} de revenus, {fort(eurosRonds.format(depenses))} de dépenses (compte commun
-      compris) et {fort(eurosRonds.format(flux.epargne))} mis de côté —{" "}
-      {reste >= 0 ? (
-        <>il reste {fort(eurosRonds.format(reste))} disponible.</>
-      ) : (
-        <>il manque {fort(eurosRonds.format(-reste))}, pris sur le solde.</>
+    <div className="flex flex-col gap-1 text-sm leading-relaxed text-muted">
+      <p>
+        Taux d&apos;épargne : {fort(`${taux} %`)}. {flux.nbMois > 1 ? "En moyenne par mois" : "Sur le mois"} :{" "}
+        {fort(eurosRonds.format(revenus))} de revenus, {fort(eurosRonds.format(flux.commun))} virés au compte commun,{" "}
+        {fort(eurosRonds.format(depensesPerso))} de dépenses perso et {fort(eurosRonds.format(flux.epargne))} mis de
+        côté —{" "}
+        {reste >= 0 ? (
+          <>il reste {fort(eurosRonds.format(reste))}.</>
+        ) : (
+          <>il manque {fort(eurosRonds.format(-reste))}, pris sur le solde.</>
+        )}
+      </p>
+      {flux.revenusExceptionnels.length > 0 && (
+        <p>
+          À part, hors moyenne :{" "}
+          {flux.revenusExceptionnels.map((r, i) => (
+            <span key={i}>
+              {i > 0 && ", "}+ {fort(eurosRonds.format(r.montant))} ({r.nom}, {MOIS_LONGS[r.mois - 1]} {r.annee})
+            </span>
+          ))}
+          .
+        </p>
       )}
-    </p>
+    </div>
   );
 }
 
@@ -299,17 +403,30 @@ function Resume({ flux }: { flux: FluxPersonne }) {
 export function FluxArgent({ flux }: { flux: FluxPersonne }) {
   const [affichage, setAffichage] = useState<"diagramme" | "tableau">("diagramme");
   const vide =
-    flux.revenus.length === 0 && flux.epargne === 0 && flux.commun === 0 && flux.charges.length === 0 && flux.quotidien.length === 0;
+    flux.nbMois === 0 ||
+    (flux.revenus.length === 0 &&
+      flux.epargne === 0 &&
+      flux.commun === 0 &&
+      flux.charges.length === 0 &&
+      flux.quotidien.length === 0);
   if (vide) return <p className="py-6 text-center text-sm text-muted-2">Aucun revenu ni dépense sur cette période.</p>;
 
   return (
     <div className="flex flex-col gap-3">
       <Resume flux={flux} />
       <div className={segmentedWrapClass + " self-start"}>
-        <button type="button" onClick={() => setAffichage("diagramme")} className={segmentedItemClass(affichage === "diagramme")}>
+        <button
+          type="button"
+          onClick={() => setAffichage("diagramme")}
+          className={segmentedItemClass(affichage === "diagramme")}
+        >
           Diagramme
         </button>
-        <button type="button" onClick={() => setAffichage("tableau")} className={segmentedItemClass(affichage === "tableau")}>
+        <button
+          type="button"
+          onClick={() => setAffichage("tableau")}
+          className={segmentedItemClass(affichage === "tableau")}
+        >
           Tableau
         </button>
       </div>

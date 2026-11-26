@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { nomCompletCategorie } from "@/lib/categories";
 import { revalidatePath } from "next/cache";
 import type { ChargeMensuelle, Personne, TypeElementPaiement, Prisma } from "@/app/generated/prisma/client";
 import {
@@ -57,6 +58,17 @@ export type DepenseQuotidienneRow = {
   categorieNom: string | null;
 };
 
+/** Revenu exceptionnel (vente, cadeau…) saisi sur un mois. */
+export type RevenuExceptionnelRow = {
+  id: number;
+  libelle: string;
+  montant: number;
+  date: Date | null;
+  personneId: number | null;
+  categorieId: number | null;
+  categorieNom: string | null;
+};
+
 export type MoisDetail = {
   moisId: number | null;
   paiements: Map<string, boolean>; // clé = `${type}:${refId}`
@@ -65,6 +77,7 @@ export type MoisDetail = {
   virements: Map<number, number>; // clé = personneId, vers le compte commun
   virementsEpargne: Map<number, number>; // clé = personneId, virement vers l'épargne
   depensesQuotidiennes: DepenseQuotidienneRow[]; // personneId = null → compte commun
+  revenusExceptionnels: RevenuExceptionnelRow[]; // personneId = null → compte commun
 };
 
 /** Lecture seule : ne crée pas de ligne Mois si elle n'existe pas encore. */
@@ -76,8 +89,12 @@ export async function getMoisDetail(annee: number, mois: number): Promise<MoisDe
       virements: true,
       virementsEpargne: true,
       depensesQuotidiennes: {
-        include: { categorie: true },
+        include: { categorie: { include: { parent: true } } },
         // Toujours de la plus ancienne à la plus récente ; sans date en dernier, puis ordre de saisie.
+        orderBy: [{ date: { sort: "asc", nulls: "last" } }, { id: "asc" }],
+      },
+      revenusExceptionnels: {
+        include: { categorie: { include: { parent: true } } },
         orderBy: [{ date: { sort: "asc", nulls: "last" } }, { id: "asc" }],
       },
     },
@@ -91,6 +108,7 @@ export async function getMoisDetail(annee: number, mois: number): Promise<MoisDe
       virements: new Map(),
       virementsEpargne: new Map(),
       depensesQuotidiennes: [],
+      revenusExceptionnels: [],
     };
   }
 
@@ -122,7 +140,16 @@ export async function getMoisDetail(annee: number, mois: number): Promise<MoisDe
       date: d.date,
       personneId: d.personneId,
       categorieId: d.categorieId,
-      categorieNom: d.categorie?.nom ?? null,
+      categorieNom: nomCompletCategorie(d.categorie),
+    })),
+    revenusExceptionnels: ligne.revenusExceptionnels.map((r) => ({
+      id: r.id,
+      libelle: r.libelle,
+      montant: r.montant,
+      date: r.date,
+      personneId: r.personneId,
+      categorieId: r.categorieId,
+      categorieNom: nomCompletCategorie(r.categorie),
     })),
   };
 }
@@ -296,6 +323,101 @@ export async function supprimerDepenseQuotidienne(formData: FormData) {
   revalidatePath("/");
   if (depense.personneId === null) revalidatePath("/parametres");
   else revalidatePath("/personnes");
+}
+
+function lireChampsRevenuExceptionnel(formData: FormData) {
+  const libelle = String(formData.get("libelle") ?? "").trim();
+  if (libelle === "") throw new Error("Libellé requis.");
+  const montant = Number(formData.get("montant"));
+  if (!Number.isFinite(montant) || montant <= 0) throw new Error("Montant invalide.");
+  const dateRaw = String(formData.get("date") ?? "").trim();
+  const date = dateRaw === "" ? null : new Date(dateRaw);
+  if (date !== null && Number.isNaN(date.getTime())) throw new Error("Date invalide.");
+  const categorieIdRaw = String(formData.get("categorieId") ?? "").trim();
+  const categorieId = categorieIdRaw ? Number(categorieIdRaw) : null;
+  return { libelle, montant, date, categorieId };
+}
+
+/** Crédite (delta > 0) ou débite le solde du compte commun ou d'une personne, archives des mois clôturés comprises. */
+async function operationsCreditSolde(
+  annee: number,
+  mois: number,
+  personneId: number | null,
+  delta: number
+): Promise<Prisma.PrismaPromise<unknown>[]> {
+  if (delta === 0) return [];
+  if (personneId === null) {
+    const parametres = await getParametres();
+    return [
+      prisma.parametres.update({ where: { id: parametres.id }, data: { soldeCommun: { increment: delta } } }),
+      operationPropagationArchiveCommun(annee, mois, delta),
+    ];
+  }
+  return [
+    prisma.personne.update({ where: { id: personneId }, data: { soldePerso: { increment: delta } } }),
+    ...(await operationsPropagationArchivePerso(annee, mois, personneId, delta, 0)),
+  ];
+}
+
+function revaliderApresRevenuExceptionnel(annee: number, mois: number, personneId: number | null) {
+  revalidatePath(`/mois/${annee}-${String(mois).padStart(2, "0")}`);
+  revalidatePath("/");
+  revalidatePath("/stats");
+  if (personneId === null) revalidatePath("/parametres");
+  else revalidatePath("/personnes");
+}
+
+/**
+ * Ajoute un revenu exceptionnel (vente, cadeau…) au compte commun
+ * (personneId = null) ou à une personne, pour un mois donné, et crédite
+ * aussitôt le solde correspondant — pendant de `ajouterDepenseQuotidienne`.
+ */
+export async function ajouterRevenuExceptionnel(annee: number, mois: number, personneId: number | null, formData: FormData) {
+  const champs = lireChampsRevenuExceptionnel(formData);
+  const ligneMois = await getOrCreateMois(annee, mois);
+  await prisma.$transaction([
+    prisma.revenuExceptionnel.create({ data: { moisId: ligneMois.id, personneId, ...champs } }),
+    ...(await operationsCreditSolde(annee, mois, personneId, champs.montant)),
+  ]);
+  revaliderApresRevenuExceptionnel(annee, mois, personneId);
+}
+
+/** Modifie un revenu exceptionnel ; l'écart de montant est répercuté sur le solde. */
+export async function modifierRevenuExceptionnel(id: number, formData: FormData) {
+  const champs = lireChampsRevenuExceptionnel(formData);
+  const existant = await prisma.revenuExceptionnel.findUniqueOrThrow({ where: { id }, include: { mois: true } });
+  await prisma.$transaction([
+    prisma.revenuExceptionnel.update({ where: { id }, data: champs }),
+    ...(await operationsCreditSolde(existant.mois.annee, existant.mois.mois, existant.personneId, champs.montant - existant.montant)),
+  ]);
+  revaliderApresRevenuExceptionnel(existant.mois.annee, existant.mois.mois, existant.personneId);
+}
+
+/** Supprime un revenu exceptionnel et retire son montant du solde. */
+export async function supprimerRevenuExceptionnel(formData: FormData) {
+  const id = Number(formData.get("id"));
+  const existant = await prisma.revenuExceptionnel.findUniqueOrThrow({ where: { id }, include: { mois: true } });
+  await prisma.$transaction([
+    prisma.revenuExceptionnel.delete({ where: { id } }),
+    ...(await operationsCreditSolde(existant.mois.annee, existant.mois.mois, existant.personneId, -existant.montant)),
+  ]);
+  revaliderApresRevenuExceptionnel(existant.mois.annee, existant.mois.mois, existant.personneId);
+}
+
+/** Revenus exceptionnels couvrant les périodes données (mois 1-12), pour les statistiques. */
+export async function getRevenusExceptionnelsPourPeriodes(periodes: { annee: number; mois: number }[]) {
+  if (periodes.length === 0) return [];
+  const lignes = await prisma.revenuExceptionnel.findMany({
+    where: { mois: { OR: periodes.map((p) => ({ annee: p.annee, mois: p.mois })) } },
+    include: { mois: true },
+  });
+  return lignes.map((r) => ({
+    libelle: r.libelle,
+    montant: r.montant,
+    personneId: r.personneId,
+    annee: r.mois.annee,
+    mois: r.mois.mois,
+  }));
 }
 
 type EtatPaiementCharge = { payee: boolean; montant: number | null } | null;
@@ -1013,6 +1135,7 @@ export async function getDepensesQuotidiennesPourPeriodes(
   return lignes.map((d) => ({
     montant: d.montant,
     personneId: d.personneId,
+    libelle: d.libelle,
     categorieId: d.categorieId,
     annee: d.mois.annee,
     mois: d.mois.mois,
