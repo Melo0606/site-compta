@@ -2,7 +2,7 @@ import { getCategories } from "@/app/actions/categories";
 import { selectClass, labelClass } from "@/lib/ui";
 import { categoriesEnArbre } from "@/lib/categories";
 
-/** Menu déroulant de catégorie, alimenté par la liste gérée dans /categories (chaque catégorie suivie de ses sous-catégories). */
+/** Menu déroulant de catégorie, alimenté par la liste gérée dans /categories (chaque catégorie en gras, suivie de ses sous-catégories en retrait). */
 export async function CategorieSelect({
   id,
   name = "categorieId",
@@ -47,11 +47,19 @@ export async function CategorieSelect({
         ) : (
           <option value="">Sans catégorie</option>
         )}
-        {categoriesEnArbre(categories).map(({ categorie, parent }) => (
-          <option key={categorie.id} value={categorie.id}>
-            {parent ? `${parent.nom} › ${categorie.nom}` : categorie.nom}
-          </option>
-        ))}
+        {categoriesEnArbre(categories).map(({ categorie, parent }) =>
+          parent ? (
+            // Sous-catégorie : en retrait sous sa catégorie (espaces insécables, seuls conservés dans une option).
+            <option key={categorie.id} value={categorie.id} style={{ fontWeight: "normal" }}>
+              {"    "}
+              {categorie.nom}
+            </option>
+          ) : (
+            <option key={categorie.id} value={categorie.id} style={{ fontWeight: "bold" }}>
+              {categorie.nom}
+            </option>
+          ),
+        )}
       </select>
     </div>
   );
