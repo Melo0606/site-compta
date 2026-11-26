@@ -49,7 +49,8 @@ const MAX_CATEGORIES = 7;
  * glissante...) et un périmètre donné (compte commun ou une personne — au
  * appelant de filtrer les listes en amont), les dépenses par catégorie de
  * premier niveau et par période, toutes sources confondues :
- * - Charges mensuelles : comptées sur chaque période où elles sont actives.
+ * - Charges mensuelles : comptées sur chaque période où elles sont actives (sauf l'enveloppe budget
+ *   « Dépenses du quotidien », dont le réel est déjà compté via les dépenses du quotidien).
  * - Charges annuelles : montant plein sur la période dont le mois correspond
  *   à leur échéance, ou montant / 12 sur chaque période si `chargesAnnuellesLissees`.
  * - Achats prévus : montant cible sur la période exacte de leur date visée (jamais de prorata).
@@ -112,6 +113,9 @@ export function statsParCategorie(data: {
       periode.mois - 1,
     );
     for (const charge of chargesMensuellesResolues) {
+      // L'enveloppe « Dépenses du quotidien » n'est qu'un budget : le réel, ce sont les dépenses du quotidien
+      // saisies, comptées plus bas. La compter ici ferait double emploi.
+      if (charge.budgetDepensesQuotidiennes) continue;
       if (estChargeMensuelleActive(charge, periode.annee, periode.mois - 1)) {
         ajouter(charge.categorieId, index, charge.montant, charge.libelle);
       }
@@ -189,28 +193,78 @@ export function replierAutres(lignes: StatsCategoriePeriode[]): StatsCategoriePe
 export type PosteFlux = {
   nom: string;
   montant: number;
-  /** Sous-catégories d'une catégorie (montants moyens), pour l'infobulle. */
+  /** Sous-catégories d'une catégorie, pour l'infobulle. */
   sousCategories?: { nom: string; montant: number }[];
 };
 
-/** Revenu annuel ou ponctuel reçu sur la période, cité à part (hors moyenne). */
+/** Revenu annuel, ponctuel ou exceptionnel reçu sur la période, cité à part (hors moyenne et hors diagramme). */
 export type RevenuExceptionnel = { nom: string; montant: number; annee: number; mois: number /* 1-12 */ };
 
-/** Moyenne mensuelle de ce qui entre et sort pour une personne (diagramme « Où va l'argent »). */
-export type FluxPersonne = {
+/**
+ * Moyenne mensuelle de ce qui entre et sort d'un compte (diagramme « Où va l'argent ») :
+ * une personne (entrées = revenus mensuels) ou le compte commun (entrées = virements reçus de chaque personne).
+ */
+export type Flux = {
+  compte: "personne" | "commun";
   /** Nombre de mois moyennés. */
   nbMois: number;
-  /** Revenus mensuels par source (libellé du revenu), moyenne mensuelle. */
-  revenus: PosteFlux[];
-  /** Revenus annuels et ponctuels (primes…) reçus sur ces mois : cités à part, hors moyenne et hors diagramme. */
+  /** Revenus mensuels par source (personne) ou virements reçus par personne (compte commun). */
+  entrees: PosteFlux[];
+  /** Primes, revenus ponctuels et revenus exceptionnels reçus sur ces mois : cités à part. */
   revenusExceptionnels: RevenuExceptionnel[];
   epargne: number;
+  /** Virement vers le compte commun (personne seulement). */
   commun: number;
-  /** Charges perso (mensuelles, annuelles lissées, achats prévus) par catégorie. */
+  /** Charges (mensuelles, annuelles lissées, achats prévus) par catégorie. */
   charges: PosteFlux[];
   /** Dépenses du quotidien par catégorie (net des remboursements). */
   quotidien: PosteFlux[];
 };
+
+type RevenuExceptionnelSaisi = { libelle: string; montant: number; annee: number; mois: number };
+
+const cleMois = (p: StatsPeriode) => `${p.annee}-${String(p.mois).padStart(2, "0")}`;
+
+/** Postes moyens par catégorie (et sous-catégories pour l'infobulle), postes nuls ou négatifs écartés. */
+function postesMoyens(lignes: StatsCategoriePeriode[], n: number): PosteFlux[] {
+  return lignes
+    .map((l) => {
+      const parSousCategorie = new Map<string, number>();
+      for (const d of l.detail) {
+        if (d.sousCategorie) parSousCategorie.set(d.sousCategorie, (parSousCategorie.get(d.sousCategorie) ?? 0) + d.total);
+      }
+      return {
+        nom: l.categorieNom,
+        montant: l.total / n,
+        sousCategories: Array.from(parSousCategorie, ([nom, total]) => ({ nom, montant: total / n }))
+          .filter((sc) => sc.montant > 0.005)
+          .sort((a, b) => b.montant - a.montant),
+      };
+    })
+    .filter((p) => p.montant > 0.005)
+    .sort((a, b) => b.montant - a.montant);
+}
+
+/** Revenus exceptionnels saisis qui tombent sur les mois donnés. */
+function exceptionnelsSurMois(periodes: StatsPeriode[], saisis: RevenuExceptionnelSaisi[]): RevenuExceptionnel[] {
+  const cles = new Set(periodes.map(cleMois));
+  return saisis
+    .filter((r) => cles.has(cleMois(r)) && r.montant > 0)
+    .map((r) => ({ nom: r.libelle, montant: r.montant, annee: r.annee, mois: r.mois }));
+}
+
+const parDate = (a: RevenuExceptionnel, b: RevenuExceptionnel) => a.annee * 12 + a.mois - (b.annee * 12 + b.mois);
+
+const fluxVide = (compte: Flux["compte"]): Flux => ({
+  compte,
+  nbMois: 0,
+  entrees: [],
+  revenusExceptionnels: [],
+  epargne: 0,
+  commun: 0,
+  charges: [],
+  quotidien: [],
+});
 
 /**
  * Moyenne mensuelle, sur les mois donnés (tous comptés de la même façon), des
@@ -223,7 +277,6 @@ export type FluxPersonne = {
  *   le mois, sinon le virement mensuel habituel de la personne ;
  * - charges perso et dépenses du quotidien par catégorie : `statsCharges` et
  *   `statsQuotidien`, calculées par l'appelant sur ces mêmes mois.
- * Les postes nuls ou négatifs sont écartés.
  */
 export function fluxMensuelMoyenPersonne(data: {
   periodes: StatsPeriode[];
@@ -236,19 +289,17 @@ export function fluxMensuelMoyenPersonne(data: {
   virementsEpargne: Map<string, number>;
   statsCharges: StatsCategoriePeriode[];
   statsQuotidien: StatsCategoriePeriode[];
-  /** Revenus exceptionnels saisis sur la page d'un mois (ventes, cadeaux…) pour cette personne : cités à part. */
-  revenusExceptionnelsSaisis?: { libelle: string; montant: number; annee: number; mois: number }[];
-}): FluxPersonne {
+  /** Revenus exceptionnels saisis sur la page d'un mois (ventes, cadeaux…) pour cette personne. */
+  revenusExceptionnelsSaisis?: RevenuExceptionnelSaisi[];
+}): Flux {
   const n = data.periodes.length;
-  const vide = { nbMois: 0, revenus: [], revenusExceptionnels: [], epargne: 0, commun: 0, charges: [], quotidien: [] };
-  if (n === 0) return vide;
+  if (n === 0) return fluxVide("personne");
 
   const revenusParLibelle = new Map<string, number>();
-  const revenusExceptionnels: RevenuExceptionnel[] = [];
+  const revenusExceptionnels = exceptionnelsSurMois(data.periodes, data.revenusExceptionnelsSaisis ?? []);
   let commun = 0;
   let epargne = 0;
   for (const p of data.periodes) {
-    const cle = `${p.annee}-${String(p.mois).padStart(2, "0")}`;
     for (const r of data.revenus) {
       if (r.personneId !== data.personne.id || !revenuActifPourMois(r, p.annee, p.mois - 1)) continue;
       if (r.type === "MENSUEL") {
@@ -256,52 +307,88 @@ export function fluxMensuelMoyenPersonne(data: {
         revenusParLibelle.set(r.libelle, (revenusParLibelle.get(r.libelle) ?? 0) + montant);
       } else {
         const montant =
-          r.type === "ANNUEL"
-            ? montantEffectifRevenuAnnuel(data.revenuAnnuelOverrides, r.id, p.annee, r.montant)
-            : r.montant;
+          r.type === "ANNUEL" ? montantEffectifRevenuAnnuel(data.revenuAnnuelOverrides, r.id, p.annee, r.montant) : r.montant;
         if (montant > 0) revenusExceptionnels.push({ nom: r.libelle, montant, annee: p.annee, mois: p.mois });
       }
     }
-    commun += data.virementsCommun.get(cle) ?? data.personne.virementMensuelHabituel;
-    epargne += data.virementsEpargne.get(cle) ?? data.personne.virementEpargneMensuelHabituel;
+    commun += data.virementsCommun.get(cleMois(p)) ?? data.personne.virementMensuelHabituel;
+    epargne += data.virementsEpargne.get(cleMois(p)) ?? data.personne.virementEpargneMensuelHabituel;
   }
-
-  const cles = new Set(data.periodes.map((p) => `${p.annee}-${p.mois}`));
-  for (const r of data.revenusExceptionnelsSaisis ?? []) {
-    if (cles.has(`${r.annee}-${r.mois}`) && r.montant > 0) {
-      revenusExceptionnels.push({ nom: r.libelle, montant: r.montant, annee: r.annee, mois: r.mois });
-    }
-  }
-  revenusExceptionnels.sort((a, b) => a.annee * 12 + a.mois - (b.annee * 12 + b.mois));
-
-  const postes = (lignes: StatsCategoriePeriode[]): PosteFlux[] =>
-    lignes
-      .map((l) => {
-        const parSousCategorie = new Map<string, number>();
-        for (const d of l.detail) {
-          if (d.sousCategorie)
-            parSousCategorie.set(d.sousCategorie, (parSousCategorie.get(d.sousCategorie) ?? 0) + d.total);
-        }
-        return {
-          nom: l.categorieNom,
-          montant: l.total / n,
-          sousCategories: Array.from(parSousCategorie, ([nom, total]) => ({ nom, montant: total / n }))
-            .filter((s) => s.montant > 0.005)
-            .sort((a, b) => b.montant - a.montant),
-        };
-      })
-      .filter((p) => p.montant > 0.005)
-      .sort((a, b) => b.montant - a.montant);
 
   return {
+    compte: "personne",
     nbMois: n,
-    revenus: Array.from(revenusParLibelle, ([nom, total]) => ({ nom, montant: total / n }))
+    entrees: Array.from(revenusParLibelle, ([nom, total]) => ({ nom, montant: total / n }))
       .filter((r) => r.montant > 0.005)
       .sort((a, b) => b.montant - a.montant),
-    revenusExceptionnels,
+    revenusExceptionnels: revenusExceptionnels.sort(parDate),
     epargne: Math.max(0, epargne / n),
     commun: Math.max(0, commun / n),
-    charges: postes(data.statsCharges),
-    quotidien: postes(data.statsQuotidien),
+    charges: postesMoyens(data.statsCharges, n),
+    quotidien: postesMoyens(data.statsQuotidien, n),
   };
+}
+
+/**
+ * Même chose pour le compte commun : les entrées sont les virements reçus de
+ * chaque personne (montant saisi pour le mois, sinon son virement mensuel
+ * habituel), les sorties les charges communes et les dépenses du quotidien
+ * du compte commun ; les revenus exceptionnels du compte commun sont cités à part.
+ */
+export function fluxMensuelMoyenCommun(data: {
+  periodes: StatsPeriode[];
+  personnes: Pick<Personne, "id" | "nom" | "virementMensuelHabituel">[];
+  /** Virements saisis vers le compte commun, par personne puis par mois ("YYYY-MM"). */
+  virementsParPersonne: Map<number, Map<string, number>>;
+  statsCharges: StatsCategoriePeriode[];
+  statsQuotidien: StatsCategoriePeriode[];
+  revenusExceptionnelsSaisis?: RevenuExceptionnelSaisi[];
+}): Flux {
+  const n = data.periodes.length;
+  if (n === 0) return fluxVide("commun");
+  const entrees = data.personnes
+    .map((personne) => {
+      const saisis = data.virementsParPersonne.get(personne.id) ?? new Map<string, number>();
+      const total = data.periodes.reduce((s, p) => s + (saisis.get(cleMois(p)) ?? personne.virementMensuelHabituel), 0);
+      return { nom: `Virement ${personne.nom}`, montant: total / n };
+    })
+    .filter((e) => e.montant > 0.005)
+    .sort((a, b) => b.montant - a.montant);
+  return {
+    compte: "commun",
+    nbMois: n,
+    entrees,
+    revenusExceptionnels: exceptionnelsSurMois(data.periodes, data.revenusExceptionnelsSaisis ?? []).sort(parDate),
+    epargne: 0,
+    commun: 0,
+    charges: postesMoyens(data.statsCharges, n),
+    quotidien: postesMoyens(data.statsQuotidien, n),
+  };
+}
+
+/** Multiplie les montants d'un flux (moyenne mensuelle → total de la période avec `facteur` = nombre de mois). Les revenus cités à part restent tels quels. */
+export function echelleFlux(flux: Flux, facteur: number): Flux {
+  const poste = (p: PosteFlux): PosteFlux => ({
+    ...p,
+    montant: p.montant * facteur,
+    sousCategories: p.sousCategories?.map((sc) => ({ ...sc, montant: sc.montant * facteur })),
+  });
+  return {
+    ...flux,
+    entrees: flux.entrees.map(poste),
+    epargne: flux.epargne * facteur,
+    commun: flux.commun * facteur,
+    charges: flux.charges.map(poste),
+    quotidien: flux.quotidien.map(poste),
+  };
+}
+
+/** Multiplie les montants de lignes par catégorie (total de la période → moyenne avec `facteur` = 1 / nombre de mois). */
+export function echelleLignes(lignes: StatsCategoriePeriode[], facteur: number): StatsCategoriePeriode[] {
+  return lignes.map((l) => ({
+    ...l,
+    total: l.total * facteur,
+    parPeriode: l.parPeriode.map((m) => m * facteur),
+    detail: l.detail.map((d) => ({ ...d, total: d.total * facteur })),
+  }));
 }

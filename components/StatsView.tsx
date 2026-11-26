@@ -3,17 +3,7 @@
 import { useState } from "react";
 import { formatEuros } from "@/lib/format";
 import { replierAutres, type StatsCategoriePeriode, type DetailLibelle } from "@/lib/stats";
-import {
-  segmentedWrapClass,
-  segmentedItemClass,
-  tableWrapClass,
-  theadRowClass,
-  thClass,
-  tdClass,
-  tdMutedClass,
-  footRowClass,
-  emptyRowClass,
-} from "@/lib/ui";
+import { segmentedWrapClass, segmentedItemClass } from "@/lib/ui";
 
 // Palette catégorielle validée (skill dataviz, ordre fixe — voir references/palette.md).
 const COULEURS = [
@@ -215,87 +205,19 @@ function Camembert({ lignes }: { lignes: StatsCategoriePeriode[] }) {
   );
 }
 
-function Tableau({ lignes, colonnes }: { lignes: StatsCategoriePeriode[]; colonnes: string[] }) {
-  const totauxParPeriode = new Array(colonnes.length).fill(0);
-  for (const ligne of lignes) {
-    ligne.parPeriode.forEach((montant, i) => (totauxParPeriode[i] += montant));
-  }
-  const totalGeneral = totauxParPeriode.reduce((a, b) => a + b, 0);
-
-  const sticky1 = "sticky left-0 z-10 border-r border-border";
-  const stickyN = "sticky right-0 z-10 border-l border-border";
+/** Dépenses par catégorie : barres cliquables (détail par sous-catégorie et libellé) ou camembert. */
+export function VueCategories({ lignes }: { lignes: StatsCategoriePeriode[] }) {
+  const [affichage, setAffichage] = useState<"barres" | "camembert">("barres");
 
   return (
-    <div className={`mt-1 ${tableWrapClass}`}>
-      <table className="w-full min-w-[980px] text-sm">
-        <thead className={theadRowClass}>
-          <tr>
-            <th className={`${sticky1} ${thClass} bg-surface-muted`}>Catégorie</th>
-            {colonnes.map((c) => (
-              <th key={c} className={`${thClass} text-right`}>
-                {c}
-              </th>
-            ))}
-            <th className={`${stickyN} ${thClass} bg-surface-muted text-right`}>Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {lignes.map((ligne) => (
-            <tr key={ligne.categorieId ?? "sans-categorie"} className="border-t border-border">
-              <td className={`${sticky1} bg-surface ${tdClass}`}>{ligne.categorieNom}</td>
-              {ligne.parPeriode.map((montant, i) => (
-                <td key={i} className={`${tdMutedClass} text-right`}>
-                  {montant > 0 ? formatEuros(montant) : "—"}
-                </td>
-              ))}
-              <td className={`${stickyN} bg-surface ${tdClass} text-right font-medium`}>{formatEuros(ligne.total)}</td>
-            </tr>
-          ))}
-          {lignes.length === 0 && (
-            <tr>
-              <td colSpan={colonnes.length + 2} className={emptyRowClass}>
-                Aucune dépense catégorisée sur cette période.
-              </td>
-            </tr>
-          )}
-        </tbody>
-        {lignes.length > 0 && (
-          <tfoot>
-            <tr className={footRowClass}>
-              <td className={`${sticky1} bg-surface-muted px-4 py-2.5`}>Total</td>
-              {totauxParPeriode.map((montant, i) => (
-                <td key={i} className="px-4 py-2.5 text-right">
-                  {montant > 0 ? formatEuros(montant) : "—"}
-                </td>
-              ))}
-              <td className={`${stickyN} bg-surface-muted px-4 py-2.5 text-right`}>{formatEuros(totalGeneral)}</td>
-            </tr>
-          </tfoot>
-        )}
-      </table>
-    </div>
-  );
-}
-
-export function StatsView({ lignes, colonnes }: { lignes: StatsCategoriePeriode[]; colonnes: string[] }) {
-  const [affichage, setAffichage] = useState<"barres" | "tableau" | "camembert">("barres");
-
-  return (
-    <div>
+    <div className="pt-1">
       <div className={segmentedWrapClass}>
         <button
           type="button"
           onClick={() => setAffichage("barres")}
           className={segmentedItemClass(affichage === "barres")}
         >
-          Par catégorie
-        </button>
-        <button
-          type="button"
-          onClick={() => setAffichage("tableau")}
-          className={segmentedItemClass(affichage === "tableau")}
-        >
-          Tableau
+          Barres
         </button>
         <button
           type="button"
@@ -305,9 +227,7 @@ export function StatsView({ lignes, colonnes }: { lignes: StatsCategoriePeriode[
           Camembert
         </button>
       </div>
-      {affichage === "barres" && <Barres lignes={lignes} />}
-      {affichage === "tableau" && <Tableau lignes={lignes} colonnes={colonnes} />}
-      {affichage === "camembert" && <Camembert lignes={replierAutres(lignes)} />}
+      {affichage === "barres" ? <Barres lignes={lignes} /> : <Camembert lignes={replierAutres(lignes)} />}
     </div>
   );
 }

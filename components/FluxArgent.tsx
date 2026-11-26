@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { formatEuros } from "@/lib/format";
-import type { FluxPersonne, PosteFlux } from "@/lib/stats";
+import { echelleFlux, echelleLignes, type Flux, type PosteFlux, type StatsCategoriePeriode } from "@/lib/stats";
+import { VueCategories } from "@/components/StatsView";
 import {
   segmentedWrapClass,
   segmentedItemClass,
@@ -53,21 +54,21 @@ type Lien = {
 };
 
 /** Mise en page du diagramme : 3 ou 4 colonnes (revenus → budget → grands postes → détail par catégorie). */
-function miseEnPage(flux: FluxPersonne, largeur: number) {
-  const totalRevenus = flux.revenus.reduce((s, r) => s + r.montant, 0);
+function miseEnPage(flux: Flux, largeur: number) {
+  const totalRevenus = flux.entrees.reduce((s, r) => s + r.montant, 0);
   const totalCharges = flux.charges.reduce((s, c) => s + c.montant, 0);
   const totalQuotidien = flux.quotidien.reduce((s, c) => s + c.montant, 0);
   const sorties = flux.epargne + flux.commun + totalCharges + totalQuotidien;
   const reste = totalRevenus - sorties;
   const total = Math.max(totalRevenus, sorties);
 
-  const entrees: PosteFlux[] = [...flux.revenus];
+  const entrees: PosteFlux[] = [...flux.entrees];
   if (reste < -0.005) entrees.push({ nom: "Pris sur le solde", montant: -reste });
 
   const postes: { id: string; nom: string; montant: number; couleur: string; enfants: PosteFlux[] }[] = [
     { id: "epargne", nom: "Épargne", montant: flux.epargne, couleur: COULEUR.epargne, enfants: [] },
     { id: "commun", nom: "Compte commun", montant: flux.commun, couleur: COULEUR.commun, enfants: [] },
-    { id: "charges", nom: "Charges perso", montant: totalCharges, couleur: COULEUR.charges, enfants: flux.charges },
+    { id: "charges", nom: nomCharges(flux), montant: totalCharges, couleur: COULEUR.charges, enfants: flux.charges },
     {
       id: "quotidien",
       nom: "Dépenses du quotidien",
@@ -169,6 +170,9 @@ function miseEnPage(flux: FluxPersonne, largeur: number) {
   return { noeuds, liens, xs, hauteurTotale, totalRevenus };
 }
 
+const nomCharges = (flux: Flux) => (flux.compte === "commun" ? "Charges communes" : "Charges perso");
+const nomEntrees = (flux: Flux) => (flux.compte === "commun" ? "virements reçus" : "revenus");
+
 function cheminLien(l: Lien, xs: number[]) {
   const x0 = xs[l.source.colonne] + LARGEUR_NOEUD;
   const x1 = xs[l.cible.colonne];
@@ -177,11 +181,13 @@ function cheminLien(l: Lien, xs: number[]) {
   return `M ${x0},${y0} C ${xm},${y0} ${xm},${y1} ${x1},${y1} L ${x1},${y1 + e} C ${xm},${y1 + e} ${xm},${y0 + e} ${x0},${y0 + e} Z`;
 }
 
-function pourcentage(montant: number, totalRevenus: number) {
-  return totalRevenus > 0 ? `${Math.round((montant / totalRevenus) * 100)} % des revenus` : "";
+function pourcentage(montant: number, totalRevenus: number, flux: Flux) {
+  return totalRevenus > 0 ? `${Math.round((montant / totalRevenus) * 100)} % des ${nomEntrees(flux)}` : "";
 }
 
-function Diagramme({ flux }: { flux: FluxPersonne }) {
+type Mode = "total" | "moyenne";
+
+function Diagramme({ flux, mode }: { flux: Flux; mode: Mode }) {
   const conteneurRef = useRef<HTMLDivElement>(null);
   const [largeur, setLargeur] = useState(900);
   const [survol, setSurvol] = useState<{
@@ -276,9 +282,12 @@ function Diagramme({ flux }: { flux: FluxPersonne }) {
         >
           <div className="font-medium text-text">{survol.titre}</div>
           <div className="mt-0.5 text-text">
-            {formatEuros(survol.montant)} <span className="text-muted">/ mois</span>
+            {formatEuros(survol.montant)}{" "}
+            <span className="text-muted">{mode === "moyenne" ? "/ mois" : "sur la période"}</span>
           </div>
-          {totalRevenus > 0 && <div className="text-xs text-muted">{pourcentage(survol.montant, totalRevenus)}</div>}
+          {totalRevenus > 0 && (
+            <div className="text-xs text-muted">{pourcentage(survol.montant, totalRevenus, flux)}</div>
+          )}
           {survol.sousCategories && survol.sousCategories.length > 0 && (
             <ul className="mt-1.5 border-t border-border pt-1.5 text-xs">
               {survol.sousCategories.map((sc) => (
@@ -295,16 +304,20 @@ function Diagramme({ flux }: { flux: FluxPersonne }) {
   );
 }
 
-function Tableau({ flux }: { flux: FluxPersonne }) {
-  const totalRevenus = flux.revenus.reduce((s, r) => s + r.montant, 0);
+function TableauFlux({ flux, mode }: { flux: Flux; mode: Mode }) {
+  const totalRevenus = flux.entrees.reduce((s, r) => s + r.montant, 0);
   const totalCharges = flux.charges.reduce((s, c) => s + c.montant, 0);
   const totalQuotidien = flux.quotidien.reduce((s, c) => s + c.montant, 0);
   const reste = totalRevenus - flux.epargne - flux.commun - totalCharges - totalQuotidien;
   const lignes: { nom: string; montant: number; niveau: 0 | 1; couleur?: string }[] = [
-    ...flux.revenus.map((r) => ({ nom: r.nom, montant: r.montant, niveau: 0 as const, couleur: COULEUR.neutre })),
-    { nom: "Épargne", montant: flux.epargne, niveau: 0, couleur: COULEUR.epargne },
-    { nom: "Compte commun", montant: flux.commun, niveau: 0, couleur: COULEUR.commun },
-    { nom: "Charges perso", montant: totalCharges, niveau: 0, couleur: COULEUR.charges },
+    ...flux.entrees.map((r) => ({ nom: r.nom, montant: r.montant, niveau: 0 as const, couleur: COULEUR.neutre })),
+    ...(flux.compte === "personne"
+      ? [
+          { nom: "Épargne", montant: flux.epargne, niveau: 0 as const, couleur: COULEUR.epargne },
+          { nom: "Compte commun", montant: flux.commun, niveau: 0 as const, couleur: COULEUR.commun },
+        ]
+      : []),
+    { nom: nomCharges(flux), montant: totalCharges, niveau: 0, couleur: COULEUR.charges },
     ...flux.charges.map((c) => ({ nom: c.nom, montant: c.montant, niveau: 1 as const })),
     { nom: "Dépenses du quotidien", montant: totalQuotidien, niveau: 0, couleur: COULEUR.quotidien },
     ...flux.quotidien.map((c) => ({ nom: c.nom, montant: c.montant, niveau: 1 as const })),
@@ -321,8 +334,8 @@ function Tableau({ flux }: { flux: FluxPersonne }) {
         <thead>
           <tr className={theadRowClass}>
             <th className={thClass}>Poste</th>
-            <th className={`${thClass} text-right`}>Par mois</th>
-            <th className={`${thClass} text-right`}>Part des revenus</th>
+            <th className={`${thClass} text-right`}>{mode === "moyenne" ? "Par mois" : "Sur la période"}</th>
+            <th className={`${thClass} text-right`}>Part des {nomEntrees(flux)}</th>
           </tr>
         </thead>
         <tbody>
@@ -363,33 +376,42 @@ const MOIS_LONGS = [
   "décembre",
 ];
 
-function Resume({ flux }: { flux: FluxPersonne }) {
-  const revenus = flux.revenus.reduce((s, r) => s + r.montant, 0);
-  const depensesPerso =
-    flux.charges.reduce((s, c) => s + c.montant, 0) + flux.quotidien.reduce((s, c) => s + c.montant, 0);
-  const reste = revenus - flux.commun - depensesPerso - flux.epargne;
-  const taux = revenus > 0 ? Math.round((flux.epargne / revenus) * 100) : 0;
+function Resume({ flux, mode }: { flux: Flux; mode: Mode }) {
+  const entrees = flux.entrees.reduce((s, r) => s + r.montant, 0);
+  const charges = flux.charges.reduce((s, c) => s + c.montant, 0);
+  const quotidien = flux.quotidien.reduce((s, c) => s + c.montant, 0);
+  const reste = entrees - flux.commun - charges - quotidien - flux.epargne;
+  const taux = entrees > 0 ? Math.round((flux.epargne / entrees) * 100) : 0;
   const fort = (texte: string) => <span className="font-semibold text-text">{texte}</span>;
+  const e = (v: number) => fort(eurosRonds.format(v));
+  const intro =
+    flux.nbMois <= 1
+      ? "Sur le mois"
+      : mode === "moyenne"
+        ? "En moyenne par mois"
+        : `Sur la période (${flux.nbMois} mois)`;
 
   return (
     <div className="flex flex-col gap-1 text-sm leading-relaxed text-muted">
-      <p>
-        Taux d&apos;épargne : {fort(`${taux} %`)}. {flux.nbMois > 1 ? "En moyenne par mois" : "Sur le mois"} :{" "}
-        {fort(eurosRonds.format(revenus))} de revenus, {fort(eurosRonds.format(flux.commun))} virés au compte commun,{" "}
-        {fort(eurosRonds.format(depensesPerso))} de dépenses perso et {fort(eurosRonds.format(flux.epargne))} mis de
-        côté —{" "}
-        {reste >= 0 ? (
-          <>il reste {fort(eurosRonds.format(reste))}.</>
-        ) : (
-          <>il manque {fort(eurosRonds.format(-reste))}, pris sur le solde.</>
-        )}
-      </p>
+      {flux.compte === "personne" ? (
+        <p>
+          Taux d&apos;épargne : {fort(`${taux} %`)}. {intro} : {e(entrees)} de revenus, {e(flux.commun)} virés au compte
+          commun, {e(charges + quotidien)} de dépenses perso et {e(flux.epargne)} mis de côté —{" "}
+          {reste >= 0 ? <>il reste {e(reste)}.</> : <>il manque {e(-reste)}, pris sur le solde.</>}
+        </p>
+      ) : (
+        <p>
+          {intro} : {e(entrees)} de virements reçus, {e(charges)} de charges communes et {e(quotidien)} de dépenses du
+          quotidien —{" "}
+          {reste >= 0 ? <>il reste {e(reste)}.</> : <>il manque {e(-reste)}, pris sur le solde du compte.</>}
+        </p>
+      )}
       {flux.revenusExceptionnels.length > 0 && (
         <p>
-          À part, hors moyenne :{" "}
+          À part, hors {mode === "moyenne" ? "moyenne" : "diagramme"} :{" "}
           {flux.revenusExceptionnels.map((r, i) => (
             <span key={i}>
-              {i > 0 && ", "}+ {fort(eurosRonds.format(r.montant))} ({r.nom}, {MOIS_LONGS[r.mois - 1]} {r.annee})
+              {i > 0 && ", "}+ {e(r.montant)} ({r.nom}, {MOIS_LONGS[r.mois - 1]} {r.annee})
             </span>
           ))}
           .
@@ -399,38 +421,74 @@ function Resume({ flux }: { flux: FluxPersonne }) {
   );
 }
 
-/** Diagramme « Où va l'argent » d'une personne (revenus → budget → postes → catégories), en moyenne mensuelle. */
-export function FluxArgent({ flux }: { flux: FluxPersonne }) {
-  const [affichage, setAffichage] = useState<"diagramme" | "tableau">("diagramme");
+function Choix<T extends string>({
+  options,
+  valeur,
+  choisir,
+}: {
+  options: [T, string][];
+  valeur: T;
+  choisir: (v: T) => void;
+}) {
+  return (
+    <div className={segmentedWrapClass}>
+      {options.map(([v, texte]) => (
+        <button key={v} type="button" onClick={() => choisir(v)} className={segmentedItemClass(valeur === v)}>
+          {texte}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * « Où va l'argent » d'une personne ou du compte commun, en trois vues (diagramme, dépenses par catégorie,
+ * tableau des flux) et deux échelles (total de la période ou moyenne par mois). `flux` est en moyenne
+ * mensuelle, `lignes` (dépenses par catégorie) en total sur les mêmes mois.
+ */
+export function FluxArgent({ flux, lignes }: { flux: Flux; lignes: StatsCategoriePeriode[] }) {
+  const [vue, setVue] = useState<"diagramme" | "categorie" | "tableau">("diagramme");
+  const [mode, setMode] = useState<Mode>("moyenne");
   const vide =
     flux.nbMois === 0 ||
-    (flux.revenus.length === 0 &&
+    (flux.entrees.length === 0 &&
       flux.epargne === 0 &&
       flux.commun === 0 &&
       flux.charges.length === 0 &&
       flux.quotidien.length === 0);
-  if (vide) return <p className="py-6 text-center text-sm text-muted-2">Aucun revenu ni dépense sur cette période.</p>;
+  if (vide) return <p className="py-6 text-center text-sm text-muted-2">Aucun mouvement sur cette période.</p>;
+
+  const n = flux.nbMois;
+  const fluxAffiche = mode === "total" ? echelleFlux(flux, n) : flux;
+  const lignesAffichees = mode === "moyenne" ? echelleLignes(lignes, 1 / n) : lignes;
 
   return (
     <div className="flex flex-col gap-3">
-      <Resume flux={flux} />
-      <div className={segmentedWrapClass + " self-start"}>
-        <button
-          type="button"
-          onClick={() => setAffichage("diagramme")}
-          className={segmentedItemClass(affichage === "diagramme")}
-        >
-          Diagramme
-        </button>
-        <button
-          type="button"
-          onClick={() => setAffichage("tableau")}
-          className={segmentedItemClass(affichage === "tableau")}
-        >
-          Tableau
-        </button>
+      <Resume flux={fluxAffiche} mode={mode} />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Choix
+          options={[
+            ["diagramme", "Diagramme"],
+            ["categorie", "Catégorie"],
+            ["tableau", "Tableau"],
+          ]}
+          valeur={vue}
+          choisir={setVue}
+        />
+        {n > 1 && (
+          <Choix
+            options={[
+              ["total", "Total de la période"],
+              ["moyenne", "Moyenne par mois"],
+            ]}
+            valeur={mode}
+            choisir={setMode}
+          />
+        )}
       </div>
-      {affichage === "diagramme" ? <Diagramme flux={flux} /> : <Tableau flux={flux} />}
+      {vue === "diagramme" && <Diagramme flux={fluxAffiche} mode={mode} />}
+      {vue === "categorie" && <VueCategories lignes={lignesAffichees} />}
+      {vue === "tableau" && <TableauFlux flux={fluxAffiche} mode={mode} />}
     </div>
   );
 }

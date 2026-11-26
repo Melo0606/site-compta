@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { getPersonnes } from "@/app/actions/personnes";
 import { getChargesMensuelles, getHistoriqueMontantsParCharge } from "@/app/actions/charges-mensuelles";
 import { getChargesAnnuelles } from "@/app/actions/charges-annuelles";
@@ -10,15 +11,20 @@ import {
   getSuiviBrutParMoisMap,
 } from "@/app/actions/mois";
 import { getRevenus, getRevenuAnnuelMontantsParAnnee, getRevenuMensuelMontantsParMois } from "@/app/actions/revenus";
-import { statsParCategorie, fluxMensuelMoyenPersonne, type StatsPeriode } from "@/lib/stats";
+import {
+  statsParCategorie,
+  fluxMensuelMoyenPersonne,
+  fluxMensuelMoyenCommun,
+  type StatsPeriode,
+  type DepenseQuotidiennePeriode,
+} from "@/lib/stats";
 import { moisEnAbs, parseMoisAbs } from "@/lib/dates";
-import { StatsView } from "@/components/StatsView";
 import { FluxArgent } from "@/components/FluxArgent";
 import { SelecteurMois } from "@/components/SelecteurMois";
 import { Tabs } from "@/components/Tabs";
 import { pageHeadingClass, sectionHeadingClass, mutedClass, buttonSecondarySmallClass, linkClass } from "@/lib/ui";
+import type { ChargeMensuelle, ChargeAnnuelle, AchatPrevu } from "@/app/generated/prisma/client";
 
-const MOIS_COURTS = ["Jan", "Fév", "Mar", "Avr", "Mai", "Jun", "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc"];
 const MOIS_LONGS = [
   "janvier",
   "février",
@@ -61,12 +67,20 @@ export default async function StatsPage({
   // Par défaut : les 12 derniers mois glissants (mois en cours inclus).
   const jusquaAbs = parseMoisAbs(jusquaMois, jusquaAnnee) ?? todayAbs;
   const depuisAbs = Math.min(parseMoisAbs(depuisMois, depuisAnnee) ?? todayAbs - 11, jusquaAbs);
-
   const periodes = periodesEntre(depuisAbs, jusquaAbs);
-  const anneesDistinctes = new Set(periodes.map((p) => p.annee)).size;
-  const colonnes = periodes.map((p) =>
-    anneesDistinctes > 1 ? `${MOIS_COURTS[p.mois - 1]} ${String(p.annee).slice(2)}` : MOIS_COURTS[p.mois - 1],
-  );
+
+  // Mois analysés : les mois écoulés de la période (un mois futur n'a pas encore de dépenses réelles, le mois
+  // en cours est incomplet) — à défaut, le mois en cours seul. Diagramme, catégories et tableau portent tous
+  // sur ces mêmes mois.
+  let moisAnalyses = periodes.filter((p) => moisEnAbs(p.annee, p.mois - 1) < todayAbs);
+  if (moisAnalyses.length === 0) moisAnalyses = periodes.filter((p) => moisEnAbs(p.annee, p.mois - 1) === todayAbs);
+  const nomMois = (p: StatsPeriode) => `${MOIS_LONGS[p.mois - 1]} ${p.annee}`;
+  const libelleMois =
+    moisAnalyses.length === 0
+      ? null
+      : moisAnalyses.length === 1
+        ? nomMois(moisAnalyses[0])
+        : `les ${moisAnalyses.length} mois écoulés de la période (${nomMois(moisAnalyses[0])} → ${nomMois(moisAnalyses[moisAnalyses.length - 1])})`;
 
   const [
     personnes,
@@ -87,119 +101,111 @@ export default async function StatsPage({
     getChargesAnnuelles(),
     getAchatsPrevus(),
     getCategories(),
-    getDepensesQuotidiennesPourPeriodes(periodes),
+    getDepensesQuotidiennesPourPeriodes(moisAnalyses),
     getHistoriqueMontantsParCharge(),
     getRevenus(),
     getSuiviBrutParMoisMap(),
     getRevenuAnnuelMontantsParAnnee(),
     getRevenuMensuelMontantsParMois(),
-    getRevenusExceptionnelsPourPeriodes(periodes),
+    getRevenusExceptionnelsPourPeriodes(moisAnalyses),
   ]);
 
-  // « Où va l'argent » : moyenne sur les mois écoulés de la période (un mois futur n'a pas encore de
-  // dépenses réelles, le mois en cours est incomplet) — à défaut, sur le mois en cours seul.
-  let moisFlux = periodes.filter((p) => moisEnAbs(p.annee, p.mois - 1) < todayAbs);
-  if (moisFlux.length === 0) moisFlux = periodes.filter((p) => moisEnAbs(p.annee, p.mois - 1) === todayAbs);
-  const libelleMoisFlux =
-    moisFlux.length === 0
-      ? null
-      : moisFlux.length === 1
-        ? `${MOIS_LONGS[moisFlux[0].mois - 1]} ${moisFlux[0].annee}`
-        : `les ${moisFlux.length} mois écoulés de la période (${MOIS_LONGS[moisFlux[0].mois - 1]} ${moisFlux[0].annee} → ${MOIS_LONGS[moisFlux[moisFlux.length - 1].mois - 1]} ${moisFlux[moisFlux.length - 1].annee})`;
+  /** Dépenses d'un compte sur les mois analysés : charges seules, quotidien seul, et les deux réunis (vue Catégorie). */
+  const statsCompte = (charges: {
+    chargesMensuelles: ChargeMensuelle[];
+    chargesAnnuelles: ChargeAnnuelle[];
+    achatsPrevus: AchatPrevu[];
+    depensesQuotidiennes: DepenseQuotidiennePeriode[];
+  }) => {
+    const base = { periodes: moisAnalyses, categories, historiqueParCharge, chargesAnnuellesLissees: true };
+    return {
+      statsCharges: statsParCategorie({ ...base, ...charges, depensesQuotidiennes: [] }),
+      statsQuotidien: statsParCategorie({
+        ...base,
+        chargesMensuelles: [],
+        chargesAnnuelles: [],
+        achatsPrevus: [],
+        depensesQuotidiennes: charges.depensesQuotidiennes,
+      }),
+      lignes: statsParCategorie({ ...base, ...charges, replier: false }),
+    };
+  };
 
-  const statsCommun = statsParCategorie({
-    periodes,
-    categories,
+  /** Virements saisis par mois ("YYYY-MM") pour une personne, vers le compte commun ou l'épargne. */
+  const virementsSaisis = (personneId: number, champ: "virements" | "virementsEpargne") =>
+    new Map(
+      Array.from(suiviBrutParMois, ([cle, suivi]) => [cle, suivi[champ].get(personneId)] as const).filter(
+        (e): e is readonly [string, number] => e[1] !== undefined,
+      ),
+    );
+
+  const enTete = (explication: ReactNode) => (
+    <div>
+      <h3 className={sectionHeadingClass}>Où va l&apos;argent</h3>
+      <p className={`mt-1 text-sm ${mutedClass}`}>
+        {libelleMois ? `Sur ${libelleMois}` : "Aucun mois écoulé sur cette période"} : {explication} Charges annuelles
+        lissées sur 12 mois ; primes et revenus exceptionnels cités à part.
+      </p>
+    </div>
+  );
+
+  const commun = statsCompte({
     chargesMensuelles: chargesMensuelles.filter((c) => c.compte === "COMMUN"),
     chargesAnnuelles: chargesAnnuelles.filter((c) => c.compte === "COMMUN"),
     achatsPrevus: achatsPrevus.filter((a) => a.compte === "COMMUN"),
     depensesQuotidiennes: depensesQuotidiennes.filter((d) => d.personneId === null),
-    historiqueParCharge,
-    replier: false,
+  });
+  const fluxCommun = fluxMensuelMoyenCommun({
+    periodes: moisAnalyses,
+    personnes,
+    virementsParPersonne: new Map(personnes.map((p) => [p.id, virementsSaisis(p.id, "virements")])),
+    statsCharges: commun.statsCharges,
+    statsQuotidien: commun.statsQuotidien,
+    revenusExceptionnelsSaisis: revenusExceptionnelsSaisis.filter((r) => r.personneId === null),
   });
 
   const tabs = [
-    { id: "commun", label: "Compte commun", content: <StatsView lignes={statsCommun} colonnes={colonnes} /> },
+    {
+      id: "commun",
+      label: "Compte commun",
+      content: (
+        <section className="flex flex-col gap-3">
+          {enTete(
+            "virements reçus de chacun (montant saisi, sinon habituel), charges communes et dépenses du quotidien du compte commun.",
+          )}
+          <FluxArgent flux={fluxCommun} lignes={commun.lignes} />
+        </section>
+      ),
+    },
     ...personnes.map((personne) => {
-      const chargesPerso = {
+      const perso = statsCompte({
         chargesMensuelles: chargesMensuelles.filter((c) => c.compte === "PERSO" && c.personneId === personne.id),
         chargesAnnuelles: chargesAnnuelles.filter((c) => c.compte === "PERSO" && c.personneId === personne.id),
         achatsPrevus: achatsPrevus.filter((a) => a.compte === "PERSO" && a.personneId === personne.id),
-      };
-      const depensesQuotidiennesPerso = depensesQuotidiennes.filter((d) => d.personneId === personne.id);
-      const virementsSaisis = (champ: "virements" | "virementsEpargne") =>
-        new Map(
-          Array.from(suiviBrutParMois, ([cle, suivi]) => [cle, suivi[champ].get(personne.id)] as const).filter(
-            (e): e is readonly [string, number] => e[1] !== undefined,
-          ),
-        );
+        depensesQuotidiennes: depensesQuotidiennes.filter((d) => d.personneId === personne.id),
+      });
       const flux = fluxMensuelMoyenPersonne({
-        periodes: moisFlux,
+        periodes: moisAnalyses,
         personne,
         revenus,
         revenuAnnuelOverrides,
         revenuMensuelOverrides,
-        virementsCommun: virementsSaisis("virements"),
-        virementsEpargne: virementsSaisis("virementsEpargne"),
+        virementsCommun: virementsSaisis(personne.id, "virements"),
+        virementsEpargne: virementsSaisis(personne.id, "virementsEpargne"),
         revenusExceptionnelsSaisis: revenusExceptionnelsSaisis.filter((r) => r.personneId === personne.id),
-        statsCharges: statsParCategorie({
-          periodes: moisFlux,
-          categories,
-          ...chargesPerso,
-          depensesQuotidiennes: [],
-          historiqueParCharge,
-          chargesAnnuellesLissees: true,
-        }),
-        statsQuotidien: statsParCategorie({
-          periodes: moisFlux,
-          categories,
-          chargesMensuelles: [],
-          chargesAnnuelles: [],
-          achatsPrevus: [],
-          depensesQuotidiennes: depensesQuotidiennesPerso,
-          historiqueParCharge,
-        }),
-      });
-      const statsPersonne = statsParCategorie({
-        periodes,
-        categories,
-        ...chargesPerso,
-        depensesQuotidiennes: depensesQuotidiennesPerso,
-        historiqueParCharge,
-        replier: false,
+        statsCharges: perso.statsCharges,
+        statsQuotidien: perso.statsQuotidien,
       });
       return {
         id: `personne-${personne.id}`,
         label: personne.nom,
         content: (
-          <div className="flex flex-col gap-8">
-            <section className="flex flex-col gap-3">
-              <div>
-                <h3 className={sectionHeadingClass}>Où va l&apos;argent</h3>
-                <p className={`mt-1 text-sm ${mutedClass}`}>
-                  {libelleMoisFlux
-                    ? moisFlux.length > 1
-                      ? `Moyenne par mois sur ${libelleMoisFlux}`
-                      : `Montants de ${libelleMoisFlux}`
-                    : "Aucun mois écoulé sur cette période"}{" "}
-                  : salaire et autres revenus mensuels, virements vers le compte commun et l&apos;épargne (montant
-                  saisi, sinon habituel), charges perso par catégorie (charges annuelles lissées sur 12 mois) et
-                  dépenses du quotidien. Les primes et revenus exceptionnels sont cités à part.
-                </p>
-              </div>
-              <FluxArgent flux={flux} />
-            </section>
-            <section className="flex flex-col gap-3">
-              <div>
-                <h3 className={sectionHeadingClass}>Dépenses par catégorie</h3>
-                <p className={`mt-1 text-sm ${mutedClass}`}>
-                  Totaux sur toute la période. Clique sur une catégorie pour voir le détail par sous-catégorie et par
-                  libellé.
-                </p>
-              </div>
-              <StatsView lignes={statsPersonne} colonnes={colonnes} />
-            </section>
-          </div>
+          <section className="flex flex-col gap-3">
+            {enTete(
+              "salaire et autres revenus mensuels, virements vers le compte commun et l'épargne (montant saisi, sinon habituel), charges perso et dépenses du quotidien.",
+            )}
+            <FluxArgent flux={flux} lignes={perso.lignes} />
+          </section>
         ),
       };
     }),
@@ -211,7 +217,12 @@ export default async function StatsPage({
       <div>
         <h1 className={pageHeadingClass}>Statistiques</h1>
         <p className={`mt-1 text-sm ${mutedClass}`}>
-          Où va l&apos;argent de chaque personne et dépenses réparties par catégorie, sur la période choisie.
+          Où va l&apos;argent du compte commun et de chaque personne, sur la période choisie. Les catégories se gèrent
+          dans{" "}
+          <Link href="/categories" className={linkClass}>
+            Catégories
+          </Link>
+          .
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -231,15 +242,6 @@ export default async function StatsPage({
           </button>
         </form>
       </div>
-      <p className={`text-sm ${mutedClass}`}>
-        Charges mensuelles (comptées chaque mois actif), charges annuelles (sur leur mois d&apos;échéance), achats
-        prévus (sur leur date visée, sans prorata) et dépenses du quotidien, par catégorie. Les catégories se gèrent
-        dans{" "}
-        <Link href="/categories" className={linkClass}>
-          Catégories
-        </Link>
-        .
-      </p>
       <Tabs tabs={tabs} defaultTabId={defaultTabId} />
     </div>
   );
