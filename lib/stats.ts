@@ -1,5 +1,13 @@
-import type { ChargeMensuelle, ChargeAnnuelle, AchatPrevu, Categorie } from "@/app/generated/prisma/client";
-import { chargeAnnuelleTerminee, estChargeMensuelleActive, withMontantResolu, type HistoriqueMontantCharge } from "./calculs";
+import type { ChargeMensuelle, ChargeAnnuelle, AchatPrevu, Categorie, Personne, Revenu } from "@/app/generated/prisma/client";
+import {
+  chargeAnnuelleTerminee,
+  estChargeMensuelleActive,
+  montantEffectifRevenuAnnuel,
+  montantEffectifRevenuMensuel,
+  revenuActifPourMois,
+  withMontantResolu,
+  type HistoriqueMontantCharge,
+} from "./calculs";
 
 export type StatsPeriode = { annee: number; mois: number }; // mois 1-12
 
@@ -124,44 +132,96 @@ function foldAutres(lignes: StatsCategoriePeriode[], nbPeriodes: number): StatsC
   return [...tete, { categorieId: null, categorieNom: "Autres", parPeriode, total }];
 }
 
-export type PointSoldes = {
-  /** Libellé court de la période (même texte que les colonnes du tableau par catégorie). */
-  label: string;
-  /** Solde de fin de mois, `null` si inconnu (mois passé jamais archivé). */
-  soldePerso: number | null;
-  soldeEpargne: number | null;
-  /** Vrai pour le mois en cours et les mois futurs : solde de fin de mois projeté, pas encore constaté. */
-  projete: boolean;
+
+export type PosteFlux = { nom: string; montant: number };
+
+/** Moyenne mensuelle de ce qui entre et sort pour une personne (diagramme « Où va mon argent »). */
+export type FluxPersonne = {
+  /** Revenus par source (libellé du revenu), moyenne mensuelle. */
+  revenus: PosteFlux[];
+  epargne: number;
+  commun: number;
+  /** Charges perso (mensuelles, annuelles, achats prévus) par catégorie. */
+  charges: PosteFlux[];
+  /** Dépenses du quotidien par catégorie (net des remboursements). */
+  quotidien: PosteFlux[];
+  /** Nombre de mois sur lesquels les dépenses du quotidien sont moyennées (0 si aucun mois passé ou en cours). */
+  nbMoisQuotidien: number;
 };
 
 /**
- * Évolution des soldes perso et épargne d'une personne, un point par période
- * (fin de mois) :
- * - mois passés : solde archivé à la clôture du mois (`SoldePersonneMois`,
- *   voir `archiverMoisEcoule`), sinon `null` (trou dans la courbe) ;
- * - mois en cours et mois futurs : solde de fin de mois projeté
- *   (`projectionPersonnes`, calculée depuis aujourd'hui).
+ * Moyenne mensuelle, sur les périodes choisies, des flux d'argent d'une
+ * personne :
+ * - revenus : montant effectif de chaque revenu sur chaque mois (montants
+ *   réels saisis pour les revenus mensuels/annuels, sinon référence) ;
+ * - virements vers le compte commun et vers l'épargne : montant saisi pour
+ *   le mois, sinon le virement mensuel habituel de la personne ;
+ * - charges perso par catégorie : `statsCharges` (voir `statsParCategorie` —
+ *   charges annuelles sur leur échéance et achats prévus sur leur date, donc
+ *   lissés par la moyenne) ;
+ * - dépenses du quotidien par catégorie : `statsQuotidien`, moyennées sur les
+ *   seuls mois écoulés de la période (un mois futur n'a encore aucune
+ *   dépense, le mois en cours est incomplet) — à défaut, sur le mois en cours.
+ * Les postes nuls ou négatifs sont écartés.
  */
-export function evolutionSoldesPersonne(data: {
+export function fluxMensuelMoyenPersonne(data: {
   periodes: StatsPeriode[];
-  labels: string[];
   /** Mois absolu (annee * 12 + mois 0-11) d'aujourd'hui. */
   todayAbs: number;
-  /** Soldes archivés de cette personne, par clé "YYYY-MM" (mois 1-12). */
-  archives: Map<string, { soldePerso: number; soldeEpargne: number }>;
-  /** Projection de cette personne depuis le mois en cours (`MoisProjectionPersonne.cle` → soldes). */
-  projection: { cle: string; soldePerso: number; soldeEpargne: number }[];
-}): PointSoldes[] {
-  const projectionParCle = new Map(data.projection.map((p) => [p.cle, p]));
-  return data.periodes.map((p, i) => {
+  personne: Pick<Personne, "id" | "virementMensuelHabituel" | "virementEpargneMensuelHabituel">;
+  revenus: Revenu[];
+  revenuAnnuelOverrides: Map<string, number>;
+  revenuMensuelOverrides: Map<string, number>;
+  /** Virements saisis par mois ("YYYY-MM", mois 1-12) pour cette personne. */
+  virementsCommun: Map<string, number>;
+  virementsEpargne: Map<string, number>;
+  statsCharges: StatsCategoriePeriode[];
+  statsQuotidien: StatsCategoriePeriode[];
+}): FluxPersonne {
+  const n = data.periodes.length;
+  if (n === 0) return { revenus: [], epargne: 0, commun: 0, charges: [], quotidien: [], nbMoisQuotidien: 0 };
+
+  const revenusParLibelle = new Map<string, number>();
+  let commun = 0;
+  let epargne = 0;
+  for (const p of data.periodes) {
     const cle = `${p.annee}-${String(p.mois).padStart(2, "0")}`;
-    const abs = p.annee * 12 + (p.mois - 1);
-    const source = abs < data.todayAbs ? data.archives.get(cle) : projectionParCle.get(cle);
-    return {
-      label: data.labels[i],
-      soldePerso: source?.soldePerso ?? null,
-      soldeEpargne: source?.soldeEpargne ?? null,
-      projete: abs >= data.todayAbs,
-    };
-  });
+    for (const r of data.revenus) {
+      if (r.personneId !== data.personne.id || !revenuActifPourMois(r, p.annee, p.mois - 1)) continue;
+      const montant =
+        r.type === "ANNUEL"
+          ? montantEffectifRevenuAnnuel(data.revenuAnnuelOverrides, r.id, p.annee, r.montant)
+          : r.type === "MENSUEL"
+            ? montantEffectifRevenuMensuel(data.revenuMensuelOverrides, r.id, p.annee, p.mois, r.montant)
+            : r.montant;
+      revenusParLibelle.set(r.libelle, (revenusParLibelle.get(r.libelle) ?? 0) + montant);
+    }
+    commun += data.virementsCommun.get(cle) ?? data.personne.virementMensuelHabituel;
+    epargne += data.virementsEpargne.get(cle) ?? data.personne.virementEpargneMensuelHabituel;
+  }
+
+  const abs = data.periodes.map((p) => p.annee * 12 + (p.mois - 1));
+  let indexQuotidien = abs.flatMap((a, i) => (a < data.todayAbs ? [i] : []));
+  if (indexQuotidien.length === 0) indexQuotidien = abs.flatMap((a, i) => (a === data.todayAbs ? [i] : []));
+
+  const postes = (lignes: StatsCategoriePeriode[], indices: number[] | null): PosteFlux[] =>
+    lignes
+      .map((l) => {
+        const somme = indices ? indices.reduce((s, i) => s + l.parPeriode[i], 0) : l.total;
+        const diviseur = indices ? indices.length : n;
+        return { nom: l.categorieNom, montant: diviseur > 0 ? somme / diviseur : 0 };
+      })
+      .filter((p) => p.montant > 0.005)
+      .sort((a, b) => b.montant - a.montant);
+
+  return {
+    revenus: Array.from(revenusParLibelle, ([nom, total]) => ({ nom, montant: total / n }))
+      .filter((r) => r.montant > 0.005)
+      .sort((a, b) => b.montant - a.montant),
+    epargne: Math.max(0, epargne / n),
+    commun: Math.max(0, commun / n),
+    charges: postes(data.statsCharges, null),
+    quotidien: postes(data.statsQuotidien, indexQuotidien),
+    nbMoisQuotidien: indexQuotidien.length,
+  };
 }
